@@ -116,6 +116,7 @@
             var all = rows();
             switch (action) {
               case 'config': return resolve({ ok: true, config: cfg() });
+              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var seen0 = {}, m0 = []; all.slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }).forEach(function (r) { if (r['가맹점'] && !seen0[r['가맹점']]) { seen0[r['가맹점']] = 1; m0.push({ name: r['가맹점'], category: r['카테고리'] }); } }); return resolve({ ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0.slice(0, 60) }); }
               case 'list': { var cy = p.cycle || cfg().currentCycle; var rs = all.filter(function (o) { return cy === 'all' || o['사이클'] === cy || o['상태'] === '미확인'; }); rs.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); return resolve({ ok: true, rows: rs, cycle: cy }); }
               case 'add': { var o = normalize(p.tx); o.id = Math.random().toString(36).slice(2) + Date.now().toString(36); o['등록'] = o['수정'] = nowIso(); all.push(o); save(all); return resolve({ ok: true, row: o }); }
               case 'update': { var i = all.findIndex(function (r) { return r.id === p.id; }); if (i < 0) throw new Error('not found'); var u = normalize(p.tx, all[i]); u['수정'] = nowIso(); all[i] = u; save(all); return resolve({ ok: true, row: u }); }
@@ -155,20 +156,19 @@
   // ------------------------------------------------------------ 데이터 로드
   function loadAll() {
     state.loading = true; state.error = null; render();
-    return api.call('config').then(function (j) {
+    // 첫 화면에 필요한 것을 요청 한 번(bootstrap)으로 받는다
+    return api.call('bootstrap', { cycle: state.cycle || '' }).then(function (j) {
       state.config = j.config;
       document.documentElement.setAttribute('data-ledger', j.config.ledgerType);
-      if (!state.cycle) state.cycle = j.config.currentCycle;
-      return Promise.all([api.call('list', { cycle: state.cycle }), api.call('summary', { cycle: state.cycle }), api.call('dict'), api.call('merchants')]);
-    }).then(function (rs) {
-      state.rows = rs[0].rows; state.summary = rs[1].summary; state.dict = rs[2].dict; state.merchants = rs[3].merchants;
+      state.cycle = j.cycle || state.cycle || j.config.currentCycle;
+      state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
       state.loading = false; render();
       flushQueue();
     }).catch(function (e) { state.loading = false; state.error = e.message; render(); });
   }
   function refresh() {
-    return Promise.all([api.call('list', { cycle: state.cycle }), api.call('summary', { cycle: state.cycle }), api.call('dict'), api.call('merchants')]).then(function (rs) {
-      state.rows = rs[0].rows; state.summary = rs[1].summary; state.dict = rs[2].dict; state.merchants = rs[3].merchants; render();
+    return api.call('bootstrap', { cycle: state.cycle }).then(function (j) {
+      state.config = j.config; state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants; render();
     }).catch(function (e) { toast('새로고침 실패: ' + e.message); });
   }
 
