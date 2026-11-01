@@ -179,6 +179,7 @@
       state.cycle = j.cycle || state.cycle || j.config.currentCycle;
       state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
       state.recurring = j.recurring || []; state.due = j.recurringDue || [];
+      state.oldBackend = (j.recurring === undefined);   // 옛 Code.gs 는 recurring 을 모른다
       state.loading = false; render();
       flushQueue();
     }).catch(function (e) { state.loading = false; state.error = e.message; render(); });
@@ -186,7 +187,7 @@
   function refresh() {
     return api.call('bootstrap', { cycle: state.cycle }).then(function (j) {
       state.config = j.config; state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
-      state.recurring = j.recurring || []; state.due = j.recurringDue || []; render();
+      state.recurring = j.recurring || []; state.due = j.recurringDue || []; state.oldBackend = (j.recurring === undefined); render();
     }).catch(function (e) { toast('새로고침 실패: ' + e.message); });
   }
 
@@ -231,6 +232,7 @@
     if (settings.local === undefined || (!settings.local && (!settings.endpoint || !settings.pin))) { $app.innerHTML = renderSetup(); bind(); return; }
     html += renderHeader();
     if (state.error) html += '<div class="notice">' + esc(state.error) + ' <button class="btn small" data-act="retry">다시 시도</button> <button class="btn small" data-act="goto" data-to="more">설정</button></div>';
+    if (state.oldBackend && !settings.local) html += '<div class="notice"><b>시트의 서버가 옛 버전입니다.</b> 거래가 안 보이고 통계·고정 항목이 비어 있을 수 있습니다.<br>시트 → 확장 프로그램 → Apps Script 에 최신 Code.gs 를 붙여 넣고 저장한 뒤, <b>배포 → 배포 관리 → ✎(연필) → 버전 "새 버전" → 배포</b>.<br><a href="' + esc(settings.endpoint) + '" target="_blank" rel="noopener">서버 상태 보기</a> (version 2 가 보이면 완료) <button class="btn small" data-act="retry">다시 확인</button></div>';
     if (state.loading && !state.config) html += '<div class="empty">불러오는 중…</div>';
     else if (state.config || state.view === 'more') {   // 연결이 안 돼도 설정 화면은 열려야 한다
       switch (state.view) {
