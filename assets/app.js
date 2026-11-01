@@ -20,6 +20,10 @@
     var s = {};
     try { s = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch (e) { s = {}; }
     if (!s.endpoint && CFG.endpoint) s.endpoint = CFG.endpoint;
+    // config.js 의 주소가 바뀌면(시트를 옮겼을 때) 직접 입력한 주소가 아닌 한 새 주소를 따라간다.
+    // cfgEndpoint 는 "마지막으로 config.js 에서 받아 온 주소". 없으면 config.js 에서 온 것으로 본다.
+    if (CFG.endpoint && s.endpoint !== CFG.endpoint && (s.cfgEndpoint === undefined || s.endpoint === s.cfgEndpoint)) s.endpoint = CFG.endpoint;
+    if (CFG.endpoint) s.cfgEndpoint = CFG.endpoint;
     if (!s.me && CFG.defaultUser) s.me = CFG.defaultUser;
     if (s.local === undefined && s.endpoint) s.local = false;   // local 이 undefined 이면 첫 설정 화면을 보여준다
     return s;
