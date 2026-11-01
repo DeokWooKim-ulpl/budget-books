@@ -12,6 +12,7 @@
   var settings = loadSettings();
   var state = {
     config: null, cycle: null, rows: [], summary: null, dict: {}, merchants: [],
+    recurring: [], due: [], recEdit: null,
     loading: false, error: null, prefill: null, toast: null, ocr: null, view: 'home', editId: null
   };
 
@@ -68,8 +69,14 @@
   // 체험 모드: 서버 없이 기기 localStorage 에만 저장. 서버와 같은 응답 모양을 돌려준다.
   var LocalApi = (function () {
     var KEY = NS + 'local.rows';
+    var KEYR = NS + 'local.recurring';
     function rows() { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { return []; } }
     function save(r) { localStorage.setItem(KEY, JSON.stringify(r)); }
+    function recs() { try { return JSON.parse(localStorage.getItem(KEYR) || '[]'); } catch (e) { return []; } }
+    function saveRecs(r) { localStorage.setItem(KEYR, JSON.stringify(r)); }
+    function recDate(item, cycle) { var p = cycle.split('-'); var y = +p[0], m = +p[1]; var day = item['일']; if (day < 25) { m += 1; if (m > 12) { m = 1; y += 1; } } var lastDay = new Date(y, m, 0).getDate(); if (day > lastDay) day = lastDay; return y + '-' + p2(m) + '-' + p2(day) + 'T12:00:00'; }
+    function due(cycle) { var have = {}; rows().forEach(function (o) { if (o['사이클'] === cycle && o['출처'] === '고정') have[o['원문']] = 1; }); return recs().filter(function (r) { return r['활성'] !== 'N' && !have['고정:' + r.id]; }); }
+    function trend(cycle, n) { var p = cycle.split('-'); var out = []; for (var i = n - 1; i >= 0; i--) { var d = new Date(+p[0], +p[1] - 1 - i, 1); out.push({ cycle: d.getFullYear() + '-' + p2(d.getMonth() + 1), expense: 0, income: 0, fixed: 0, planned: 0, count: 0 }); } var map = {}; out.forEach(function (t) { map[t.cycle] = t; }); rows().forEach(function (o) { var t = map[o['사이클']]; if (!t || o['상태'] === '취소') return; if (o['유형'] === '수입') { t.income += o['금액']; return; } t.expense += o['금액']; t.count++; if (o['출처'] === '고정') t.fixed += o['금액']; if (o['계획'] === 'Y') t.planned += o['금액']; }); return out; }
     function cfg() {
       var type = CFG.localLedgerType || 'shared';
       return { ledgerType: type, cycleStartDay: 25, members: type === 'shared' ? ['덕우', '지민'] : ['덕우'],
@@ -104,6 +111,7 @@
         if (c.ledgerType === 'personal') { if (o['계획'] === 'Y') out.planned += o['금액']; else out.unplanned += o['금액']; }
       });
       out.unconfirmedTotal = all.filter(function (o) { return o['상태'] === '미확인'; }).length;
+      out.fixed = 0; rs.forEach(function (o) { if (o['유형'] !== '수입' && o['출처'] === '고정') out.fixed += o['금액']; }); out.variable = out.expense - out.fixed; out.trend = trend(cycle, 6);
       if (c.ledgerType === 'shared') {
         var un = {}; all.forEach(function (o) { if (o['유형'] === '지출' && o['정산'] === 'X' && o['상태'] !== '취소') un[o['결제인']] = (un[o['결제인']] || 0) + o['금액']; });
         out.unsettledAllByPayer = un;
@@ -120,7 +128,11 @@
             var all = rows();
             switch (action) {
               case 'config': return resolve({ ok: true, config: cfg() });
-              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var seen0 = {}, m0 = []; all.slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }).forEach(function (r) { if (r['가맹점'] && !seen0[r['가맹점']]) { seen0[r['가맹점']] = 1; m0.push({ name: r['가맹점'], category: r['카테고리'] }); } }); return resolve({ ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0.slice(0, 60) }); }
+              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var seen0 = {}, m0 = []; all.slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }).forEach(function (r) { if (r['가맹점'] && !seen0[r['가맹점']]) { seen0[r['가맹점']] = 1; m0.push({ name: r['가맹점'], category: r['카테고리'] }); } }); return resolve({ ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0.slice(0, 60), recurring: recs(), recurringDue: due(cy0).map(function (r) { return r.id; }) }); }
+              case 'recurring': { var cyr = p.cycle || cfg().currentCycle; return resolve({ ok: true, recurring: recs(), due: due(cyr).map(function (r) { return r.id; }), cycle: cyr }); }
+              case 'recurringSave': { var rl = recs(); var it = Object.assign({ '유형': '지출', '활성': 'Y', '계획': 'Y' }, p.item || {}); it['금액'] = Math.round(Number(String(it['금액']).replace(/[^\d.-]/g, '')) || 0); it['일'] = Math.min(31, Math.max(1, Number(it['일']) || 1)); it['결제인'] = it['결제인'] || cfg().members[0]; if (!it['이름']) throw new Error('이름을 입력하세요'); if (!it['금액']) throw new Error('금액을 입력하세요'); if (!it['카테고리']) it['카테고리'] = it['유형'] === '수입' ? '수입' : ''; var ri = it.id ? rl.findIndex(function (r) { return r.id === it.id; }) : -1; if (ri < 0) { it.id = 'r' + Math.random().toString(36).slice(2); rl.push(it); } else rl[ri] = it; saveRecs(rl); return resolve({ ok: true, item: it, recurring: rl }); }
+              case 'recurringDelete': { var rl2 = recs().filter(function (r) { return r.id !== p.id; }); saveRecs(rl2); return resolve({ ok: true, deleted: true, recurring: rl2 }); }
+              case 'applyRecurring': { var cya = p.cycle || cfg().currentCycle; var ds = due(cya); if (p.ids && p.ids.length) ds = ds.filter(function (r) { return p.ids.indexOf(r.id) >= 0; }); var added = ds.map(function (r) { var tx = normalize({ '일시': recDate(r, cya), '유형': r['유형'], '금액': r['금액'], '가맹점': r['이름'], '카테고리': r['카테고리'], '항목': r['메모'] || '', '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': '고정:' + r.id }); tx.id = Math.random().toString(36).slice(2) + Date.now().toString(36); tx['등록'] = tx['수정'] = nowIso(); all.push(tx); return tx; }); save(all); return resolve({ ok: true, added: added.length, rows: added }); }
               case 'list': { var cy = p.cycle || cfg().currentCycle; var rs = all.filter(function (o) { return cy === 'all' || o['사이클'] === cy || o['상태'] === '미확인'; }); rs.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); return resolve({ ok: true, rows: rs, cycle: cy }); }
               case 'add': { var o = normalize(p.tx); o.id = Math.random().toString(36).slice(2) + Date.now().toString(36); o['등록'] = o['수정'] = nowIso(); all.push(o); save(all); return resolve({ ok: true, row: o }); }
               case 'update': { var i = all.findIndex(function (r) { return r.id === p.id; }); if (i < 0) throw new Error('not found'); var u = normalize(p.tx, all[i]); u['수정'] = nowIso(); all[i] = u; save(all); return resolve({ ok: true, row: u }); }
@@ -166,13 +178,15 @@
       document.documentElement.setAttribute('data-ledger', j.config.ledgerType);
       state.cycle = j.cycle || state.cycle || j.config.currentCycle;
       state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
+      state.recurring = j.recurring || []; state.due = j.recurringDue || [];
       state.loading = false; render();
       flushQueue();
     }).catch(function (e) { state.loading = false; state.error = e.message; render(); });
   }
   function refresh() {
     return api.call('bootstrap', { cycle: state.cycle }).then(function (j) {
-      state.config = j.config; state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants; render();
+      state.config = j.config; state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
+      state.recurring = j.recurring || []; state.due = j.recurringDue || []; render();
     }).catch(function (e) { toast('새로고침 실패: ' + e.message); });
   }
 
@@ -223,6 +237,8 @@
         case 'add': html += renderForm(null); break;
         case 'edit': html += renderForm(state.rows.filter(function (r) { return r.id === state.editId; })[0]); break;
         case 'list': html += renderList(); break;
+        case 'stats': html += renderStats(); break;
+        case 'recurring': html += renderRecurring(); break;
         case 'more': html += renderMore(); break;
         default: html += renderHome();
       }
@@ -236,7 +252,7 @@
   function renderHeader() {
     var title = CFG.name || (isShared() ? '공동 장부' : '내 예산');
     var c = state.cycle || '';
-    var showCycle = state.view === 'home' || state.view === 'list';
+    var showCycle = state.view === 'home' || state.view === 'list' || state.view === 'stats';
     var q = queue().length;
     return '<header class="top"><h1>' + esc(title) + (settings.local ? ' <span class="sub">(체험)</span>' : '') + (q ? ' <span class="badge" title="연결되면 자동 전송">' + q + '건 대기</span>' : '') + '</h1>' +
       (showCycle ? '<div class="cycle"><button data-act="cycle" data-d="-1" aria-label="이전 달">‹</button><span>' + esc(c) + '<br><small class="muted" style="font-weight:400">' + esc(cycleLabel(c)) + '</small></span><button data-act="cycle" data-d="1" aria-label="다음 달">›</button></div>' : '') +
@@ -246,7 +262,7 @@
   function renderNav() {
     var un = state.summary ? state.summary.unconfirmedTotal : 0;
     function a(v, ico, label, badge) { return '<a href="#' + v + '" class="' + (state.view === v || (v === 'add' && state.view === 'edit') ? 'on' : '') + '"><span class="ico">' + ico + '</span>' + label + (badge ? '<span class="badge">' + badge + '</span>' : '') + '</a>'; }
-    return '<nav class="bottom">' + a('home', '⌂', '홈', un) + a('add', '＋', '입력') + a('list', '☰', '목록') + a('more', '⋯', '더보기') + '</nav>';
+    return '<nav class="bottom">' + a('home', '⌂', '홈', un) + a('add', '＋', '입력') + a('list', '☰', '목록') + a('stats', '◔', '통계') + a('more', '⋯', '더보기') + '</nav>';
   }
 
   function renderHome() {
@@ -255,6 +271,11 @@
     var pending = state.rows.filter(function (r) { return r['상태'] === '미확인'; });
     if (pending.length) {
       h += '<div class="card"><h2>확인이 필요한 자동 수집 ' + pending.length + '건</h2>' + pending.map(txRow).join('') + '</div>';
+    }
+    if (state.due.length) {
+      var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
+      var dueSum = dueItems.reduce(function (a, r) { return a + (r['유형'] === '수입' ? 0 : r['금액']); }, 0);
+      h += '<div class="card"><h2>이번 사이클에 아직 반영 안 된 고정 항목 ' + dueItems.length + '건</h2><div class="sub" style="margin-bottom:10px">' + esc(dueItems.map(function (r) { return r['이름'] + ' ' + won(r['금액']); }).join(' · ')) + (dueSum ? ' (지출 ' + won(dueSum) + ')' : '') + '</div><div class="row" style="gap:8px"><button class="btn primary" style="flex:1" data-act="recapply">거래에 반영</button><button class="btn" data-act="goto" data-to="recurring">목록 보기</button></div></div>';
     }
     h += '<div class="card"><h2>이번 사이클 지출</h2><div class="big">' + won(s.expense) + '</div>';
     if (isShared()) {
@@ -269,7 +290,9 @@
       }
       h += '<div class="grid2" style="margin-top:14px"><div><div class="sub">계획</div><b>' + won(s.planned) + '</b></div><div><div class="sub">비계획</div><b>' + won(s.unplanned) + '</b></div></div>';
     }
-    if (s.income) h += '<div class="sub" style="margin-top:10px">수입 <b class="ok">' + won(s.income) + '</b></div>';
+    if (s.fixed) h += '<div class="sub" style="margin-top:10px">고정 ' + won(s.fixed) + ' · 변동 ' + won(s.variable) + '</div>';
+    if (s.income) h += '<div class="sub" style="margin-top:6px">수입 <b class="ok">' + won(s.income) + '</b>' + (s.income > s.expense ? ' · 남는 돈 <b class="ok">' + won(s.income - s.expense) + '</b>' : '') + '</div>';
+    h += '<div style="margin-top:10px"><a href="#stats" class="sub">그래프로 보기 →</a></div>';
     h += '</div>';
     var cats = Object.keys(s.byCategory).sort(function (a, b) { return s.byCategory[b] - s.byCategory[a]; });
     var max = cats.length ? s.byCategory[cats[0]] : 1;
@@ -283,7 +306,7 @@
 
   function txRow(r) {
     var cls = 'tx' + (r['상태'] === '미확인' ? ' unconfirmed' : '') + (r['상태'] === '취소' ? ' cancelled' : '');
-    var meta = [String(r['일시']).substring(11, 16), r['항목'], isShared() ? r['결제인'] + (r['정산'] === 'X' ? ' · 미정산' : '') : (r['계획'] === 'Y' ? '계획' : ''), r['출처'] !== '수동' && r['출처'] !== '이관' ? r['출처'] : ''].filter(Boolean).join(' · ');
+    var meta = [r['항목'], isShared() ? r['결제인'] + (r['정산'] === 'X' ? ' · 미정산' : '') : (r['계획'] === 'Y' ? '계획' : ''), r['출처'] !== '수동' && r['출처'] !== '이관' ? r['출처'] : ''].filter(Boolean).join(' · ');
     return '<div class="' + cls + '" data-act="edit" data-id="' + esc(r.id) + '"><span class="cat ' + (r['카테고리'] ? '' : 'none') + '">' + esc(r['카테고리'] || '미분류') + '</span><div class="main"><div class="name">' + esc(r['가맹점'] || '(가맹점 없음)') + '</div><div class="meta">' + esc(meta) + '</div></div><span class="amt ' + (r['유형'] === '수입' ? 'income' : '') + '">' + (r['유형'] === '수입' ? '+' : '') + won(r['금액']) + '</span></div>';
   }
 
@@ -310,7 +333,7 @@
     h += '<div class="field"><label>가맹점</label><input name="가맹점" type="text" list="merchants" value="' + esc(v['가맹점']) + '" placeholder="예: 농수축산물마트" autocomplete="off"><datalist id="merchants">' + state.merchants.map(function (m) { return '<option value="' + esc(m.name) + '">'; }).join('') + '</datalist></div>';
     h += '<div class="field"><label>카테고리 <span id="cat-hint" class="muted"></span></label><div class="chips" data-name="카테고리">' + cats.map(function (c) { return '<button type="button" class="chip ' + (v['카테고리'] === c ? 'on' : '') + '" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '<button type="button" class="chip" data-act="newcat">＋ 새 카테고리</button></div><input type="hidden" name="카테고리" value="' + esc(v['카테고리']) + '"></div>';
     h += '<div class="field"><label>항목 / 메모</label><input name="항목" type="text" value="' + esc(v['항목']) + '" placeholder="예: 고기, 자동차세"></div>';
-    h += '<div class="field"><label>일시</label><input name="일시" type="datetime-local" value="' + esc(String(v['일시']).substring(0, 16)) + '"></div>';
+    h += '<div class="field"><label>날짜</label><input name="일시" type="date" value="' + esc(String(v['일시']).substring(0, 10)) + '"></div>';
     if (isShared() && edit) h += '<div class="field"><label>정산</label><div class="seg" data-name="정산"><button type="button" class="' + (v['정산'] === 'X' ? 'on' : '') + '" data-v="X">미정산</button><button type="button" class="' + (v['정산'] === 'O' ? 'on' : '') + '" data-v="O">정산됨</button></div></div>';
     h += '<input type="hidden" name="유형" value="' + esc(v['유형']) + '"><input type="hidden" name="결제인" value="' + esc(v['결제인']) + '"><input type="hidden" name="계획" value="' + esc(v['계획']) + '"><input type="hidden" name="정산" value="' + esc(v['정산']) + '"><input type="hidden" name="출처" value="' + esc(v['출처']) + '"><input type="hidden" name="원문" value="' + esc(v['원문']) + '">';
     h += '<div class="row" style="margin-top:16px;gap:8px">' + (edit ? '<button type="button" class="btn danger" data-act="delete" data-id="' + esc(row.id) + '">삭제</button>' : '<button type="button" class="btn" data-act="goto" data-to="home">취소</button>') + '<button type="submit" class="btn primary" style="flex:1">' + (edit ? '수정 저장' : '저장') + '</button></div>';
@@ -334,9 +357,159 @@
       if (n) h += '<div class="notice">체험 모드의 거래 ' + n + '건은 이 기기에만 있습니다. 위에서 서버 주소를 넣고 체험 모드를 끄면 시트로 올릴지 묻습니다.</div>';
     }
     h += '<div class="card"><h2>장부</h2><div class="sub">유형: ' + (c ? (c.ledgerType === 'shared' ? '공동 (' + c.members.join(', ') + ')' : '개인') : '-') + ' · 사이클 시작일: ' + (c ? c.cycleStartDay : '-') + '일</div>' + (c && c.sheetUrl ? '<p><a href="' + esc(c.sheetUrl) + '" target="_blank" rel="noopener">구글 시트에서 열기 (PC 수정)</a></p>' : '') + '<p class="sub">카테고리, 예산, 멤버는 시트의 <code>설정</code> 탭에서 바꿉니다.</p></div>';
+    h += '<div class="card"><h2>고정 수입 / 지출</h2><p class="sub" style="margin:0 0 10px">월세, 월급, 보험료처럼 매달 반복되는 항목을 등록해 두면 사이클마다 한 번에 거래로 넣을 수 있습니다.</p><button class="btn block" data-act="goto" data-to="recurring">고정 항목 관리 (' + state.recurring.length + '건)</button></div>';
     h += '<div class="card"><h2>알림 문구 테스트</h2><p class="sub" style="margin:0 0 8px">MacroDroid 가 보내는 알림 문구가 어떻게 읽히는지 확인합니다.</p><div class="field"><textarea id="ntest" rows="2" placeholder="[토스] 스타벅스 4,500원 결제 완료"></textarea></div><button class="btn block" data-act="ntest">파싱해 보기</button><div id="ntest-out" class="sub" style="margin-top:8px"></div></div>';
     h += '<div class="card"><h2>자동 수집 설정 요약</h2><p class="sub">안드로이드 MacroDroid 에서 "알림 수신(토스)" 트리거 → "HTTP 요청(POST)" 액션으로 아래 JSON 을 웹앱 URL 로 보냅니다. 자세한 절차는 README 참고.</p><pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:10px;border-radius:10px">' + esc(JSON.stringify({ action: 'ingest', pin: '(PIN)', device: me() || '(이름)', source: '알림', text: '[notification_title] [notification_text]' }, null, 1)) + '</pre></div>';
     return h;
+  }
+
+  // ------------------------------------------------------------ 통계 (SVG 로 직접 그림, 라이브러리 없음)
+  var PALETTE = ['#1b6ef3', '#0f9d58', '#f4b400', '#db4437', '#8e44ad', '#00acc1', '#ff7043', '#9e9e9e'];
+  function short(n) { n = Number(n) || 0; var a = Math.abs(n); var t = a >= 100000000 ? (a / 100000000).toFixed(1).replace(/\.0$/, '') + '억' : a >= 10000 ? Math.round(a / 10000) + '만' : a.toLocaleString('ko-KR'); return (n < 0 ? '-' : '') + t; }
+  function monthLabel(c) { return String(c).substring(5, 7).replace(/^0/, '') + '월'; }
+
+  function chartBars(trend) {
+    var W = 320, H = 170, L = 8, B = 24, T = 18;
+    var max = Math.max.apply(null, trend.map(function (t) { return Math.max(t.expense, t.income); }).concat([1]));
+    var n = trend.length, slot = (W - L * 2) / n, bw = Math.min(22, slot / 3);
+    var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart">';
+    [0.25, 0.5, 0.75, 1].forEach(function (f) { var y = T + (H - T - B) * (1 - f); h += '<line x1="' + L + '" x2="' + (W - L) + '" y1="' + y + '" y2="' + y + '" class="grid"/>'; });
+    trend.forEach(function (t, i) {
+      var cx = L + slot * i + slot / 2;
+      var he = (H - T - B) * t.expense / max, hi = (H - T - B) * t.income / max;
+      var cur = t.cycle === state.cycle;
+      h += '<rect x="' + (cx - bw - 1) + '" y="' + (H - B - he) + '" width="' + bw + '" height="' + he + '" rx="3" class="bar-exp' + (cur ? ' cur' : '') + '"/>';
+      if (t.income) h += '<rect x="' + (cx + 1) + '" y="' + (H - B - hi) + '" width="' + bw + '" height="' + hi + '" rx="3" class="bar-inc"/>';
+      if (t.expense) h += '<text x="' + (cx - 1) + '" y="' + (H - B - he - 4) + '" class="lbl" text-anchor="middle">' + short(t.expense) + '</text>';
+      h += '<text x="' + cx + '" y="' + (H - 7) + '" class="lbl' + (cur ? ' cur' : '') + '" text-anchor="middle">' + monthLabel(t.cycle) + '</text>';
+    });
+    return h + '</svg><div class="legend"><span><i style="background:var(--accent)"></i>지출</span><span><i style="background:var(--ok)"></i>수입</span></div>';
+  }
+
+  function chartCumulative(rows, cycle, budget) {
+    var r = LedgerParser.cycleRange(cycle, state.config.cycleStartDay);
+    var days = Math.round((r.end.getTime() - r.start.getTime()) / 86400000);
+    var daily = []; for (var i = 0; i < days; i++) daily.push(0);
+    rows.forEach(function (o) {
+      if (o['유형'] === '수입' || o['상태'] === '취소' || o['사이클'] !== cycle) return;
+      var d = Math.floor((new Date(String(o['일시']).substring(0, 10) + 'T00:00:00').getTime() - r.start.getTime()) / 86400000);
+      if (d >= 0 && d < days) daily[d] += o['금액'];
+    });
+    var cum = [], acc = 0; daily.forEach(function (v) { acc += v; cum.push(acc); });
+    var today = Math.floor((new Date(new Date().toISOString().substring(0, 10) + 'T00:00:00').getTime() - r.start.getTime()) / 86400000);
+    var isCur = today >= 0 && today < days;
+    var upto = isCur ? today : days - 1;
+    var max = Math.max(acc, budget || 0, 1);
+    var W = 320, H = 170, L = 8, B = 22, T = 14, R = 8;
+    function x(i) { return L + (W - L - R) * i / (days - 1); }
+    function y(v) { return T + (H - T - B) * (1 - v / max); }
+    var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart">';
+    [0.25, 0.5, 0.75, 1].forEach(function (f) { h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(max * f) + '" y2="' + y(max * f) + '" class="grid"/>'; });
+    if (budget) h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(budget) + '" y2="' + y(budget) + '" class="budget"/><text x="' + (W - R) + '" y="' + (y(budget) - 4) + '" class="lbl" text-anchor="end">예산 ' + short(budget) + '</text>';
+    var pts = []; for (var k = 0; k <= upto; k++) pts.push(x(k).toFixed(1) + ',' + y(cum[k]).toFixed(1));
+    if (pts.length > 1) h += '<polygon points="' + x(0).toFixed(1) + ',' + y(0).toFixed(1) + ' ' + pts.join(' ') + ' ' + x(upto).toFixed(1) + ',' + y(0).toFixed(1) + '" class="area"/>';
+    h += '<polyline points="' + pts.join(' ') + '" class="line"/>';
+    if (isCur) h += '<circle cx="' + x(upto) + '" cy="' + y(cum[upto]) + '" r="4" class="dot"/><text x="' + Math.min(x(upto), W - 50) + '" y="' + (y(cum[upto]) - 8) + '" class="lbl" text-anchor="' + (x(upto) > W - 60 ? 'end' : 'start') + '">' + short(cum[upto]) + '</text>';
+    function dl(i) { var d = new Date(r.start.getTime() + i * 86400000); return (d.getMonth() + 1) + '/' + d.getDate(); }
+    h += '<text x="' + L + '" y="' + (H - 6) + '" class="lbl">' + dl(0) + '</text><text x="' + x(Math.floor(days / 2)) + '" y="' + (H - 6) + '" class="lbl" text-anchor="middle">' + dl(Math.floor(days / 2)) + '</text><text x="' + (W - R) + '" y="' + (H - 6) + '" class="lbl" text-anchor="end">' + dl(days - 1) + '</text>';
+    h += '</svg>';
+    var spent = cum[upto] || 0, elapsed = upto + 1;
+    var avg = spent / elapsed, proj = Math.round(avg * days);
+    var cap = isCur ? '오늘까지 ' + elapsed + '일 동안 ' + won(spent) + ' · 하루 평균 ' + won(Math.round(avg)) + ' · 이 속도면 사이클 끝에 약 <b>' + won(proj) + '</b>' + (budget ? (proj > budget ? ' <span class="danger">(예산 초과 예상)</span>' : ' <span class="ok">(예산 안)</span>') : '') : '사이클 합계 ' + won(acc) + ' · 하루 평균 ' + won(Math.round(acc / days));
+    return h + '<div class="sub" style="margin-top:6px">' + cap + '</div>';
+  }
+
+  function chartDonut(map, total) {
+    var keys = Object.keys(map).sort(function (a, b) { return map[b] - map[a]; });
+    if (!keys.length || !total) return '<div class="empty">데이터가 없습니다</div>';
+    var items = keys.slice(0, 7).map(function (k) { return { k: k, v: map[k] }; });
+    if (keys.length > 7) items.push({ k: '그 외 ' + (keys.length - 7) + '개', v: keys.slice(7).reduce(function (a, k) { return a + map[k]; }, 0) });
+    var cx = 70, cy = 70, R = 60, r0 = 38, a0 = -Math.PI / 2;
+    var h = '<div class="donut-wrap"><svg viewBox="0 0 140 140" class="donut">';
+    items.forEach(function (it, i) {
+      var a1 = a0 + Math.PI * 2 * it.v / total;
+      var large = a1 - a0 > Math.PI ? 1 : 0;
+      var p = function (a, rr) { return (cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2); };
+      if (it.v / total > 0.999) h += '<circle cx="' + cx + '" cy="' + cy + '" r="' + ((R + r0) / 2) + '" fill="none" stroke="' + PALETTE[i % PALETTE.length] + '" stroke-width="' + (R - r0) + '"/>';
+      else h += '<path d="M' + p(a0, R) + ' A' + R + ',' + R + ' 0 ' + large + ',1 ' + p(a1, R) + ' L' + p(a1, r0) + ' A' + r0 + ',' + r0 + ' 0 ' + large + ',0 ' + p(a0, r0) + ' Z" fill="' + PALETTE[i % PALETTE.length] + '"/>';
+      a0 = a1;
+    });
+    h += '<text x="' + cx + '" y="' + (cy - 2) + '" class="lbl" text-anchor="middle" style="font-size:9px">합계</text><text x="' + cx + '" y="' + (cy + 12) + '" class="lbl big" text-anchor="middle">' + short(total) + '</text></svg>';
+    h += '<div class="donut-legend">' + items.map(function (it, i) { return '<div class="row"><span><i style="background:' + PALETTE[i % PALETTE.length] + '"></i>' + esc(it.k) + '</span><span><b>' + won(it.v) + '</b> <span class="sub">' + Math.round(it.v / total * 100) + '%</span></span></div>'; }).join('') + '</div></div>';
+    return h;
+  }
+
+  function stackBar(parts) {
+    var total = parts.reduce(function (a, p) { return a + p.v; }, 0);
+    if (!total) return '<div class="empty">데이터가 없습니다</div>';
+    return '<div class="stack">' + parts.map(function (p, i) { return p.v ? '<i style="width:' + (p.v / total * 100) + '%;background:' + PALETTE[i % PALETTE.length] + '" title="' + esc(p.k) + '"></i>' : ''; }).join('') + '</div>' +
+      '<div class="legend">' + parts.map(function (p, i) { return '<span><i style="background:' + PALETTE[i % PALETTE.length] + '"></i>' + esc(p.k) + ' <b>' + won(p.v) + '</b> (' + Math.round(p.v / total * 100) + '%)</span>'; }).join('') + '</div>';
+  }
+
+  function renderStats() {
+    var s = state.summary; if (!s) return '';
+    var h = '';
+    var trend = s.trend || [];
+    h += '<div class="card"><h2>최근 ' + trend.length + '개 사이클 지출 · 수입</h2>' + (trend.length ? chartBars(trend) : '<div class="empty">데이터가 없습니다</div>');
+    if (trend.length >= 2) { var prev = trend[trend.length - 2], curT = trend[trend.length - 1]; var diff = curT.expense - prev.expense; if (prev.expense) h += '<div class="sub" style="margin-top:6px">지난 사이클보다 <b class="' + (diff > 0 ? 'danger' : 'ok') + '">' + (diff > 0 ? '+' : '') + won(diff) + '</b> (' + (diff > 0 ? '+' : '') + Math.round(diff / prev.expense * 100) + '%)</div>'; }
+    h += '</div>';
+    h += '<div class="card"><h2>이번 사이클 누적 지출</h2>' + chartCumulative(state.rows, state.cycle, isShared() ? null : state.config.budgetTotal) + '</div>';
+    h += '<div class="card"><h2>카테고리 비율</h2>' + chartDonut(s.byCategory, s.expense) + '</div>';
+    if (isShared()) {
+      var payers = Object.keys(s.byPayer).map(function (k) { return { k: k, v: s.byPayer[k] }; });
+      h += '<div class="card"><h2>누가 얼마나 냈나</h2>' + stackBar(payers) + (s.settlement ? '<div class="sub" style="margin-top:8px">이 사이클 기준 정산: ' + esc(s.settlement.from) + ' → ' + esc(s.settlement.to) + ' ' + won(s.settlement.amount) + '</div>' : '') + '</div>';
+    } else {
+      h += '<div class="card"><h2>계획 / 비계획</h2>' + stackBar([{ k: '계획', v: s.planned }, { k: '비계획', v: s.unplanned }]) + '</div>';
+    }
+    h += '<div class="card"><h2>고정 / 변동</h2>' + stackBar([{ k: '고정', v: s.fixed || 0 }, { k: '변동', v: s.variable != null ? s.variable : s.expense }]) + '<div class="sub" style="margin-top:8px">고정은 <a href="#recurring">고정 항목</a>에서 반영한 거래입니다.</div></div>';
+    h += '<div class="card"><h2>수입과 지출</h2>' + stackBar([{ k: '지출', v: s.expense }, { k: '수입', v: s.income }]) + (s.income ? '<div class="sub" style="margin-top:8px">' + (s.income >= s.expense ? '남는 돈 <b class="ok">' + won(s.income - s.expense) + '</b>' : '수입보다 <b class="danger">' + won(s.expense - s.income) + '</b> 더 썼습니다') + '</div>' : '') + '</div>';
+    return h;
+  }
+
+  // ------------------------------------------------------------ 고정 수입/지출
+  function renderRecurring() {
+    var h = '';
+    var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
+    if (dueItems.length) h += '<div class="notice info row"><span>이번 사이클(' + esc(state.cycle) + ')에 반영 안 된 항목 ' + dueItems.length + '건</span><button class="btn small primary" data-act="recapply">모두 반영</button></div>';
+    var editing = state.recEdit;
+    if (editing) {
+      var cur = editing === 'new' ? {} : (state.recurring.filter(function (r) { return r.id === editing; })[0] || {});
+      var v = Object.assign({ '유형': '지출', '이름': '', '금액': '', '카테고리': '', '결제인': me(), '일': state.config.cycleStartDay, '계획': 'Y', '활성': 'Y', '메모': '' }, cur);
+      var cats = state.config.categories.slice(); if (v['카테고리'] && cats.indexOf(v['카테고리']) < 0) cats.push(v['카테고리']);
+      h += '<form id="recform" class="card" data-id="' + esc(cur.id || '') + '"><h2>' + (cur.id ? '고정 항목 수정' : '고정 항목 추가') + '</h2>';
+      h += '<div class="row"><div class="seg" data-name="유형"><button type="button" class="' + (v['유형'] === '지출' ? 'on' : '') + '" data-v="지출">지출</button><button type="button" class="' + (v['유형'] === '수입' ? 'on' : '') + '" data-v="수입">수입</button></div>';
+      if (isShared()) h += '<div class="seg" data-name="결제인">' + state.config.members.map(function (m) { return '<button type="button" class="' + (v['결제인'] === m ? 'on' : '') + '" data-v="' + esc(m) + '">' + esc(m) + '</button>'; }).join('') + '</div>';
+      else h += '<div class="seg" data-name="계획"><button type="button" class="' + (v['계획'] !== 'N' ? 'on' : '') + '" data-v="Y">계획</button><button type="button" class="' + (v['계획'] === 'N' ? 'on' : '') + '" data-v="N">비계획</button></div>';
+      h += '</div>';
+      h += '<div class="field"><label>이름</label><input name="이름" type="text" value="' + esc(v['이름']) + '" placeholder="예: 월세, 월급, 실비보험"></div>';
+      h += '<div class="field"><label>금액</label><input class="amount-input" name="금액" type="text" inputmode="numeric" value="' + esc(v['금액'] ? Number(v['금액']).toLocaleString('ko-KR') : '') + '" placeholder="0"></div>';
+      h += '<div class="field"><label>매월 며칠</label><input name="일" type="number" min="1" max="31" value="' + esc(v['일']) + '"><div class="sub" style="margin-top:4px">사이클 시작일(' + state.config.cycleStartDay + '일)보다 작은 날은 다음 달로 잡힙니다. 예: 10일 → 10/25 시작 사이클이면 11/10</div></div>';
+      h += '<div class="field"><label>카테고리</label><div class="chips" data-name="카테고리">' + cats.concat(['수입']).filter(function (c, i, a) { return a.indexOf(c) === i; }).map(function (c) { return '<button type="button" class="chip ' + (v['카테고리'] === c ? 'on' : '') + '" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '</div><input type="hidden" name="카테고리" value="' + esc(v['카테고리']) + '"></div>';
+      h += '<div class="field"><label>메모</label><input name="메모" type="text" value="' + esc(v['메모']) + '"></div>';
+      h += '<input type="hidden" name="유형" value="' + esc(v['유형']) + '"><input type="hidden" name="결제인" value="' + esc(v['결제인']) + '"><input type="hidden" name="계획" value="' + esc(v['계획']) + '"><input type="hidden" name="활성" value="' + esc(v['활성']) + '">';
+      h += '<div class="row" style="margin-top:16px;gap:8px">' + (cur.id ? '<button type="button" class="btn danger" data-act="recdel" data-id="' + esc(cur.id) + '">삭제</button>' : '') + '<button type="button" class="btn" data-act="reccancel">취소</button><button type="submit" class="btn primary" style="flex:1">저장</button></div></form>';
+    } else {
+      h += '<button class="btn primary block" data-act="recnew">＋ 고정 항목 추가</button>';
+    }
+    var inc = state.recurring.filter(function (r) { return r['유형'] === '수입'; }), exp = state.recurring.filter(function (r) { return r['유형'] !== '수입'; });
+    function sum(list) { return list.reduce(function (a, r) { return a + (r['활성'] === 'N' ? 0 : r['금액']); }, 0); }
+    function recRow(r) {
+      var meta = ['매월 ' + r['일'] + '일', r['카테고리'], isShared() ? r['결제인'] : (r['계획'] === 'N' ? '비계획' : '계획'), r['메모']].filter(Boolean).join(' · ');
+      var isDue = state.due.indexOf(r.id) >= 0;
+      return '<div class="tx' + (r['활성'] === 'N' ? ' cancelled' : '') + '" data-act="recedit" data-id="' + esc(r.id) + '"><span class="cat ' + (isDue ? 'none' : '') + '">' + (r['활성'] === 'N' ? '꺼짐' : (isDue ? '미반영' : '반영됨')) + '</span><div class="main"><div class="name">' + esc(r['이름']) + '</div><div class="meta">' + esc(meta) + '</div></div><span class="amt ' + (r['유형'] === '수입' ? 'income' : '') + '">' + (r['유형'] === '수입' ? '+' : '') + won(r['금액']) + '</span><button type="button" class="btn small" data-act="rectoggle" data-id="' + esc(r.id) + '" title="켜기/끄기">' + (r['활성'] === 'N' ? '켜기' : '끄기') + '</button></div>';
+    }
+    h += '<div class="card"><h2>고정 수입 · 매달 ' + won(sum(inc)) + '</h2>' + (inc.length ? inc.map(recRow).join('') : '<div class="empty">없음</div>') + '</div>';
+    h += '<div class="card"><h2>고정 지출 · 매달 ' + won(sum(exp)) + '</h2>' + (exp.length ? exp.map(recRow).join('') : '<div class="empty">없음. 월세·관리비·보험료·구독료를 넣어 두세요</div>') + '</div>';
+    if (inc.length || exp.length) h += '<div class="card"><h2>매달 남는 돈 (고정 기준)</h2><div class="big ' + (sum(inc) - sum(exp) < 0 ? 'danger' : '') + '">' + won(sum(inc) - sum(exp)) + '</div><div class="sub">고정 수입 − 고정 지출. 변동 지출은 빼기 전입니다.</div></div>';
+    return h;
+  }
+
+  function onRecSubmit(e) {
+    e.preventDefault();
+    var form = e.target; var item = { id: form.getAttribute('data-id') || '' };
+    ['유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모'].forEach(function (k) { var el = form.querySelector('[name=' + k + ']'); if (el) item[k] = el.value; });
+    var btn = form.querySelector('[type=submit]'); btn.disabled = true;
+    api.call('recurringSave', { item: item }).then(function () { state.recEdit = null; toast('저장했습니다'); return refresh(); }).catch(function (err) { btn.disabled = false; toast('실패: ' + err.message); });
   }
 
   function renderSetup() {
@@ -394,6 +567,25 @@
       var file = document.getElementById('ocrfile');
       if (file) file.addEventListener('change', function () { if (file.files[0]) runOcr(file.files[0]); });
     }
+    var rform = document.getElementById('recform');
+    if (rform) {
+      rform.addEventListener('submit', onRecSubmit);
+      var ramt = rform.querySelector('[name=금액]');
+      ramt.addEventListener('input', function () { var n = ramt.value.replace(/[^\d]/g, ''); ramt.value = n ? Number(n).toLocaleString('ko-KR') : ''; });
+      rform.querySelectorAll('.seg').forEach(function (seg) {
+        seg.addEventListener('click', function (e) {
+          var b = e.target.closest('button'); if (!b) return;
+          seg.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
+          rform.querySelector('[name=' + seg.getAttribute('data-name') + ']').value = b.getAttribute('data-v');
+        });
+      });
+      var rchips = rform.querySelector('.chips');
+      rchips.addEventListener('click', function (e) {
+        var c = e.target.closest('.chip'); if (!c) return;
+        rchips.querySelectorAll('.chip').forEach(function (x) { x.classList.remove('on'); }); c.classList.add('on');
+        rform.querySelector('input[name=카테고리]').value = c.getAttribute('data-v');
+      });
+    }
   }
 
   function autoCategory(form, merchant) {
@@ -413,6 +605,7 @@
     ['금액', '가맹점', '카테고리', '항목', '일시', '유형', '결제인', '계획', '정산', '출처', '원문'].forEach(function (k) { var el = form.querySelector('[name=' + k + ']'); if (el) tx[k] = el.value; });
     tx['금액'] = Number(String(tx['금액']).replace(/[^\d]/g, '')) || 0;
     if (!tx['금액']) { toast('금액을 입력하세요'); return; }
+    if (tx['일시'] && tx['일시'].length === 10) tx['일시'] += 'T12:00:00';
     if (tx['일시'] && tx['일시'].length === 16) tx['일시'] += ':00';
     tx['상태'] = '확인';
     state.prefill = null;
@@ -472,6 +665,27 @@
         break;
       }
       case 'trylocal': settings.local = true; saveSettings(); go('home'); loadAll(); break;
+      case 'recnew': state.recEdit = 'new'; render(); break;
+      case 'recedit': if (e.target.closest('[data-act="rectoggle"]')) break; state.recEdit = el.getAttribute('data-id'); render(); window.scrollTo(0, 0); break;
+      case 'reccancel': state.recEdit = null; render(); break;
+      case 'rectoggle': {
+        var rid = el.getAttribute('data-id'); var ritem = state.recurring.filter(function (r) { return r.id === rid; })[0]; if (!ritem) break;
+        var copy = Object.assign({}, ritem, { '활성': ritem['활성'] === 'N' ? 'Y' : 'N' });
+        api.call('recurringSave', { item: copy }).then(function () { toast(copy['활성'] === 'N' ? '껐습니다' : '켰습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
+        break;
+      }
+      case 'recdel': {
+        if (!confirm('이 고정 항목을 삭제할까요? 이미 거래에 반영된 내역은 남습니다.')) break;
+        api.call('recurringDelete', { id: el.getAttribute('data-id') }).then(function () { state.recEdit = null; toast('삭제했습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
+        break;
+      }
+      case 'recapply': {
+        var dueNames = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; }).map(function (r) { return r['이름']; });
+        if (!dueNames.length) { toast('반영할 항목이 없습니다'); break; }
+        if (!confirm(state.cycle + ' 사이클에 ' + dueNames.length + '건을 거래로 넣습니다:\n' + dueNames.join(', '))) break;
+        api.call('applyRecurring', { cycle: state.cycle }).then(function (j) { toast(j.added + '건을 거래에 넣었습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
+        break;
+      }
       case 'ntest': {
         var txt = document.getElementById('ntest').value; var r = LedgerParser.parseNotification(txt);
         var g = LedgerParser.guessCategory(r.merchant, state.dict, []);

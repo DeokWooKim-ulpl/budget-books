@@ -97,6 +97,34 @@ nav.bottom a .badge { position: absolute; top: 6px; right: calc(50% - 22px); }
 .empty { text-align: center; color: var(--muted); padding: 32px 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .hidden { display: none !important; }
+
+/* 통계 그래프 (인라인 SVG) */
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .bar-exp { fill: var(--accent); opacity: .55; }
+.chart .bar-exp.cur { opacity: 1; }
+.chart .bar-inc { fill: var(--ok); opacity: .8; }
+.chart .lbl { fill: var(--muted); font-size: 10px; }
+.chart .lbl.cur { fill: var(--text); font-weight: 700; }
+.chart .lbl.big { fill: var(--text); font-size: 14px; font-weight: 700; }
+.chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.chart .area { fill: var(--accent); opacity: .12; }
+.chart .dot { fill: var(--accent); stroke: var(--card); stroke-width: 2; }
+.chart .budget { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.legend i, .donut-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.donut-wrap { display: flex; gap: 14px; align-items: center; }
+.donut { width: 140px; height: 140px; flex: 0 0 auto; }
+.donut .lbl { fill: var(--muted); font-size: 10px; }
+.donut .lbl.big { fill: var(--text); font-size: 14px; font-weight: 700; }
+.donut-legend { flex: 1 1 auto; min-width: 0; font-size: 14px; }
+.donut-legend .row { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.donut-legend .row:last-child { border-bottom: 0; }
+.stack { display: flex; height: 16px; border-radius: 999px; overflow: hidden; background: var(--line); }
+.stack i { display: block; height: 100%; }
+.notice.row { display: flex; }
+.tx .btn.small { flex: 0 0 auto; }
+@media (max-width: 380px) { .donut-wrap { flex-direction: column; align-items: stretch; } .donut { margin: 0 auto; } }
 code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 13px; }
 @media (min-width: 700px) {
   #app { padding-bottom: 24px; }
