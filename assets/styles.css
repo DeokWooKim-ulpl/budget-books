@@ -159,3 +159,31 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 1
   nav.bottom { position: sticky; top: 0; bottom: auto; height: 52px; border-top: 0; border-bottom: 1px solid var(--line); max-width: 640px; margin: 0 auto; border-radius: 0 0 14px 14px; }
   nav.bottom a .badge { right: calc(50% - 30px); top: 4px; }
 }
+
+/* v3: 정산·통장·대출·이벤트·예산·카테고리·검색·품목 */
+.row.kv { padding: 6px 0; border-bottom: 1px solid var(--line); gap: 8px; }
+.row.kv:last-child { border-bottom: 0; }
+.grid2 .row.kv { border-bottom: 0; padding: 2px 0; flex-direction: column; align-items: flex-start; gap: 0; }
+.pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--line); color: var(--muted); font-weight: 600; vertical-align: 1px; }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.card.tap { cursor: pointer; }
+.card.tap:active { background: var(--accent-soft); }
+.card.off { opacity: .55; }
+.chip.off { opacity: .5; text-decoration: line-through; }
+.linklist a { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 4px; border-bottom: 1px solid var(--line); text-decoration: none; color: var(--text); font-weight: 600; }
+.linklist a:last-child { border-bottom: 0; }
+.linklist a .muted { font-weight: 400; font-size: 13px; text-align: right; }
+.linklist a::after { content: '›'; color: var(--muted); margin-left: 4px; }
+.searchbar { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.searchbar input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 10px 14px; outline: none; }
+.searchbar input:focus { border-color: var(--accent); }
+details.items { margin: 4px 0 12px; }
+details.items summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 8px 0; }
+details.items summary .muted { font-weight: 400; font-size: 13px; }
+.itemrow { gap: 6px; margin-top: 6px; }
+.itemrow input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 10px; outline: none; font-size: 14px; }
+.itemrow input:focus { border-color: var(--accent); }
+.itemrow .btn.small { flex: 0 0 auto; padding: 6px 10px; }
+.field .seg { margin-top: 2px; }
+.seg button { white-space: nowrap; }
+@media (max-width: 380px) { .seg button { padding: 10px 12px; font-size: 14px; } }
