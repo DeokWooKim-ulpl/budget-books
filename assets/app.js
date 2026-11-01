@@ -32,6 +32,12 @@
     return s;
   }
   function saveSettings() { try { localStorage.setItem(LS_KEY, JSON.stringify(settings)); } catch (e) { } }
+  // 화면 밝기: light(기본) / dark / auto(기기 설정 따름). styles.css 의 [data-theme] 규칙이 색을 바꾼다.
+  function applyTheme() {
+    var t = settings.theme || 'light';
+    if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
+  }
+  applyTheme();
 
   // 설치 링크: ?setup=<base64url JSON {endpoint, pin, me}> 로 열면 설정이 자동 복원된다.
   // 휴대폰을 바꾸거나 앱을 다시 깔아도 이 링크 하나만 열면 끝.
@@ -395,6 +401,12 @@
         .then(function () { delete state.extraLoading[c]; if (state.view === 'cal') render(); });
     });
   }
+  // 달력 칸의 금액: 1원 단위까지 다 쓰되, 글자 수에 따라 크기를 줄여 칸 밖으로 나가지 않게 한다
+  function calAmt(n, cls, sign) {
+    var t = sign + Math.round(Math.abs(Number(n) || 0)).toLocaleString('ko-KR');
+    var sz = t.length <= 6 ? '' : t.length <= 8 ? ' s1' : t.length <= 10 ? ' s2' : ' s3';
+    return '<span class="' + cls + sz + '">' + t + '</span>';
+  }
   function renderCal() {
     var todayK = dayKey(nowIso());
     if (!state.calMonth) state.calMonth = todayK.substring(0, 7);
@@ -417,9 +429,9 @@
     for (var d = 1; d <= days; d++) {
       var k = m + '-' + p2(d); var v = byDay[k];
       h += '<button type="button" class="d' + (k === todayK ? ' today' : '') + (k === sel ? ' sel' : '') + (d === sd ? ' cyc' : '') + '" data-act="calday" data-k="' + k + '"><span class="n">' + d + '</span>' +
-        (v && v.inc ? '<span class="inc">+' + short(v.inc) + '</span>' : '') + (v && v.exp ? '<span class="exp">-' + short(v.exp) + '</span>' : '') + '</button>';
+        (v && v.inc ? calAmt(v.inc, 'inc', '+') : '') + (v && v.exp ? calAmt(v.exp, 'exp', '-') : '') + '</button>';
     }
-    h += '</div><div class="sub" style="margin-top:8px;font-size:12px">' + sd + '일(세로줄)부터 새 사이클 · 만원 단위는 반올림</div></div>';
+    h += '</div><div class="sub" style="margin-top:8px;font-size:12px">' + sd + '일(세로줄)부터 새 사이클</div></div>';
     if (sel) {
       var v2 = byDay[sel];
       h += '<div class="card"><div class="row"><h2 style="margin:0">' + esc(dayLabel(sel)) + '</h2><button type="button" class="btn small primary" data-act="addon" data-date="' + sel + '">＋ 이 날 입력</button></div>';
@@ -456,7 +468,9 @@
 
   function renderMore() {
     var c = state.config;
-    var h = '<div class="card"><h2>연결</h2>';
+    var th = settings.theme || 'light';
+    var h = '<div class="card"><h2>화면</h2><div class="row"><span>밝기</span><div class="seg" id="theme-seg">' + [['light', '밝게'], ['dark', '어둡게'], ['auto', '자동']].map(function (o) { return '<button type="button" class="' + (th === o[0] ? 'on' : '') + '" data-act="theme" data-v="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></div><div class="sub" style="margin-top:6px">자동은 휴대폰의 다크 모드 설정을 따릅니다.</div></div>';
+    h += '<div class="card"><h2>연결</h2>';
     h += '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" value="' + esc(settings.endpoint || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>';
     h += '<div class="field"><label>PIN</label><input id="s-pin" type="password" value="' + esc(settings.pin || '') + '"></div>';
     h += '<div class="field"><label>내 이름 (자동 수집·입력 시 결제인)</label><input id="s-me" type="text" value="' + esc(settings.me || '') + '" list="members"><datalist id="members">' + (c ? c.members.map(function (m) { return '<option value="' + esc(m) + '">'; }).join('') : '') + '</datalist></div>';
@@ -752,6 +766,7 @@
       case 'cycle': { state.cycle = shiftCycle(state.cycle, Number(el.getAttribute('data-d'))); var cc = settings.local ? null : readCache(state.cycle); if (cc) { applyBoot(cc); state.loading = false; } else state.loading = true; render(); refresh(); break; }
       case 'calmonth': state.calMonth = shiftCycle(state.calMonth, Number(el.getAttribute('data-d'))); state.calDay = ''; render(); break;
       case 'calday': state.calDay = el.getAttribute('data-k'); render(); break;
+      case 'theme': settings.theme = el.getAttribute('data-v'); saveSettings(); applyTheme(); render(); break;
       case 'addon': state.prefill = { tx: { '일시': el.getAttribute('data-date') + 'T12:00:00' } }; state.returnTo = 'cal'; go('add'); break;
       case 'edit': go('edit/' + el.getAttribute('data-id')); break;
       case 'settle':
