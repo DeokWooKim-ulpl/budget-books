@@ -1,6 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
+  var APP_VERSION = '2026-11-01c';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -312,6 +313,7 @@
     }
     html += renderNav();
     $app.innerHTML = html;
+    if (state.view === 'cal') fitCalAmounts();
     renderToast();
     bind();
   }
@@ -407,6 +409,16 @@
     var sz = t.length <= 6 ? '' : t.length <= 8 ? ' s1' : t.length <= 10 ? ' s2' : ' s3';
     return '<span class="' + cls + sz + '">' + t + '</span>';
   }
+  // 렌더 뒤 실제 너비를 재서, 그래도 칸보다 긴 금액은 글자 크기를 비율대로 더 줄인다 (화면 폭이 어떻든 칸 밖으로 안 나간다)
+  function fitCalAmounts() {
+    var els = $app.querySelectorAll('.cal-grid .d .inc, .cal-grid .d .exp');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], cw = el.clientWidth, sw = el.scrollWidth;
+      if (!cw || sw <= cw) continue;
+      var fs = parseFloat(getComputedStyle(el).fontSize) || 10;
+      el.style.fontSize = Math.max(5, Math.floor(fs * cw / sw * 10) / 10) + 'px';
+    }
+  }
   function renderCal() {
     var todayK = dayKey(nowIso());
     if (!state.calMonth) state.calMonth = todayK.substring(0, 7);
@@ -486,6 +498,7 @@
     h += '<div class="card"><h2>고정 수입 / 지출</h2><p class="sub" style="margin:0 0 10px">월세, 월급, 보험료처럼 매달 반복되는 항목을 등록해 두면 사이클마다 한 번에 거래로 넣을 수 있습니다.</p><button class="btn block" data-act="goto" data-to="recurring">고정 항목 관리 (' + state.recurring.length + '건)</button></div>';
     h += '<div class="card"><h2>알림 문구 테스트</h2><p class="sub" style="margin:0 0 8px">MacroDroid 가 보내는 알림 문구가 어떻게 읽히는지 확인합니다.</p><div class="field"><textarea id="ntest" rows="2" placeholder="[토스] 스타벅스 4,500원 결제 완료"></textarea></div><button class="btn block" data-act="ntest">파싱해 보기</button><div id="ntest-out" class="sub" style="margin-top:8px"></div></div>';
     h += '<div class="card"><h2>자동 수집 설정 요약</h2><p class="sub">안드로이드 MacroDroid 에서 "알림 수신(토스)" 트리거 → "HTTP 요청(POST)" 액션으로 아래 JSON 을 웹앱 URL 로 보냅니다. 자세한 절차는 README 참고.</p><pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:10px;border-radius:10px">' + esc(JSON.stringify({ action: 'ingest', pin: '(PIN)', device: me() || '(이름)', source: '알림', text: '[notification_title] [notification_text]' }, null, 1)) + '</pre></div>';
+    h += '<div class="sub" style="text-align:center;margin:16px 0 4px">앱 버전 ' + APP_VERSION + ' · <a href="#" data-act="reload">새로고침</a></div>';
     return h;
   }
 
@@ -763,6 +776,7 @@
     switch (act) {
       case 'goto': go(el.getAttribute('data-to')); break;
       case 'retry': loadAll(); break;
+      case 'reload': e.preventDefault(); location.reload(); break;
       case 'cycle': { state.cycle = shiftCycle(state.cycle, Number(el.getAttribute('data-d'))); var cc = settings.local ? null : readCache(state.cycle); if (cc) { applyBoot(cc); state.loading = false; } else state.loading = true; render(); refresh(); break; }
       case 'calmonth': state.calMonth = shiftCycle(state.calMonth, Number(el.getAttribute('data-d'))); state.calDay = ''; render(); break;
       case 'calday': state.calDay = el.getAttribute('data-k'); render(); break;
@@ -888,7 +902,19 @@
   }
 
   // ------------------------------------------------------------ 시작
-  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('./sw.js').catch(function () { }); }
+  if ('serviceWorker' in navigator) {
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      // 앱을 다시 앞으로 가져올 때마다 새 버전이 있는지 묻는다 (PWA 는 자주 안 닫으니까)
+      document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') reg.update().catch(function () { }); });
+    }).catch(function () { });
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!hadController) return;   // 처음 설치될 때는 새로고침할 필요 없다
+      hadController = false;
+      if (state.view === 'add' || state.view === 'edit') toast('새 버전이 있습니다', '새로고침', function () { location.reload(); }, 15000);
+      else location.reload();
+    });
+  }
   applySetupLink();
   route();
   if (settings.local !== undefined) loadAll().then(checkShareInbox);
