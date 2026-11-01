@@ -265,6 +265,27 @@ var LedgerParser = (function () {
     };
   }
 
+
+  // 영수증(OCR 글자)에서 "품목 ... 가격" 줄을 뽑는다. 합계·부가세·카드 줄은 뺀다. 결과: [{ name, qty, price }]
+  function parseReceiptItems(text) {
+    var lines = toLines(text);
+    var out = [];
+    var skip = /합계|총계|총액|소계|부가세|과세|면세|할인|거스름|받은|받을|카드|현금|승인|결제|포인트|적립|잔액|금액|수량|단가|TOTAL|VAT|CASH|CARD/i;
+    for (var i = 0; i < lines.length; i++) {
+      var line = normalizeSpaces(lines[i]);
+      if (!line || skip.test(line)) continue;
+      // 줄 끝의 숫자(쉼표 포함)를 가격으로. 앞쪽 글자가 품목. "x2", "2개" 같은 수량도 받는다.
+      var m = /^(.*?)\s*(?:[xX×]\s*(\d{1,2})|(\d{1,2})\s*개)?\s*([\d,]{3,})\s*원?$/.exec(line);
+      if (!m) continue;
+      var name = m[1].replace(/[\*\-_:|]+$/, '').trim();
+      var price = parseInt(m[4].replace(/,/g, ''), 10);
+      if (!name || /^[\d\s.,:-]+$/.test(name) || isNaN(price) || price < 100 || price > 5000000) continue;
+      if (/^\d{4}[-./]\d{1,2}/.test(name) || /\d{2}:\d{2}/.test(name)) continue;   // 날짜·시간 줄
+      out.push({ name: name, qty: Number(m[2] || m[3]) || 1, price: price });
+    }
+    return out;
+  }
+
   return {
     toLines: toLines,
     parseAmount: parseAmount,
@@ -275,7 +296,8 @@ var LedgerParser = (function () {
     cycleMonth: cycleMonth,
     cycleRange: cycleRange,
     parseScreenshot: parseScreenshot,
-    parseNotification: parseNotification
+    parseNotification: parseNotification,
+    parseReceiptItems: parseReceiptItems
   };
 })();
 
