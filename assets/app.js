@@ -209,7 +209,8 @@
   // ------------------------------------------------------------ 렌더
   function render() {
     var html = '';
-    if (settings.local === undefined || (!settings.local && !settings.endpoint)) { $app.innerHTML = renderSetup(); bind(); return; }
+    // 주소가 config.js 에 미리 들어 있어도 PIN 을 넣기 전까지는 처음 설정 화면을 보여준다
+    if (settings.local === undefined || (!settings.local && (!settings.endpoint || !settings.pin))) { $app.innerHTML = renderSetup(); bind(); return; }
     html += renderHeader();
     if (state.error) html += '<div class="notice">' + esc(state.error) + ' <button class="btn small" data-act="retry">다시 시도</button> <button class="btn small" data-act="goto" data-to="more">설정</button></div>';
     if (state.loading && !state.config) html += '<div class="empty">불러오는 중…</div>';
@@ -335,12 +336,21 @@
   }
 
   function renderSetup() {
-    return '<header class="top"><h1>' + esc(CFG.name || '가계부') + '</h1></header><div class="card"><h2>처음 설정</h2><p class="sub">시트에 붙인 Apps Script 웹앱 URL 과 PIN 을 넣으세요. 아직 없으면 체험 모드로 먼저 써볼 수 있습니다.</p>' +
-      '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" placeholder="https://script.google.com/macros/s/…/exec"></div>' +
-      '<div class="field"><label>PIN</label><input id="s-pin" type="password"></div>' +
-      '<div class="field"><label>내 이름</label><input id="s-me" type="text" placeholder="덕우"></div>' +
-      '<button class="btn primary block" data-act="savesettings">연결</button>' +
-      '<button class="btn block" style="margin-top:8px" data-act="trylocal">체험 모드로 시작</button></div>';
+    var preset = !!(CFG.endpoint && settings.endpoint === CFG.endpoint);   // 주소가 config.js 에 들어 있으면 URL 칸은 숨긴다
+    var h = '<header class="top"><h1>' + esc(CFG.name || '가계부') + '</h1></header><div class="card"><h2>처음 설정</h2>';
+    if (preset) {
+      h += '<p class="sub">시트 설정 탭에 적어 둔 PIN 과 내 이름을 넣으면 바로 연결됩니다.</p>' +
+        '<input id="s-endpoint" type="hidden" value="' + esc(settings.endpoint) + '">';
+    } else {
+      h += '<p class="sub">시트에 붙인 Apps Script 웹앱 URL 과 PIN 을 넣으세요. 아직 없으면 체험 모드로 먼저 써볼 수 있습니다.</p>' +
+        '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" value="' + esc(settings.endpoint || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>';
+    }
+    h += '<div class="field"><label>PIN</label><input id="s-pin" type="password" inputmode="numeric" autocomplete="off"></div>' +
+      '<div class="field"><label>내 이름</label><input id="s-me" type="text" value="' + esc(settings.me || '') + '" placeholder="덕우"></div>' +
+      '<button class="btn primary block" data-act="savesettings">연결</button>';
+    if (!preset) h += '<button class="btn block" style="margin-top:8px" data-act="trylocal">체험 모드로 시작</button>';
+    h += (preset ? '<p class="sub" style="margin-top:12px">다른 시트에 연결하려면 더보기 → 연결 설정에서 주소를 바꿀 수 있습니다.</p>' : '') + '</div>';
+    return h;
   }
 
   function renderToast() {
@@ -442,6 +452,7 @@
         settings.pin = document.getElementById('s-pin').value || '';
         settings.me = (document.getElementById('s-me').value || '').trim();
         var lc = document.getElementById('s-local'); settings.local = lc ? lc.checked : !settings.endpoint;
+        if (!settings.local && settings.endpoint && !settings.pin) { toast('PIN을 입력하세요'); break; }
         saveSettings(); state.config = null; state.cycle = null; go('home');
         var localRows = []; try { localRows = JSON.parse(localStorage.getItem(NS + 'local.rows') || '[]'); } catch (err) { }
         if (wasLocal && !settings.local && settings.endpoint && localRows.length && confirm('체험 모드에 저장된 거래 ' + localRows.length + '건을 시트로 올릴까요?')) {
