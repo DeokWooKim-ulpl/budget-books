@@ -13,6 +13,8 @@
   var state = {
     config: null, cycle: null, rows: [], summary: null, dict: {}, merchants: [],
     recurring: [], due: [], recEdit: null,
+    calMonth: null, calDay: null, extra: {}, extraLoading: {},   // 달력: 보고 있는 달, 고른 날, 현재 사이클 밖의 거래(사이클별), 받아 오는 중인 사이클
+    syncing: false, returnTo: null,
     loading: false, error: null, prefill: null, toast: null, ocr: null, view: 'home', editId: null
   };
 
@@ -170,25 +172,81 @@
   }
 
   // ------------------------------------------------------------ 데이터 로드
+  // 속도: 마지막 bootstrap 응답을 기기에 캐시해 두고, 다음에 열 때 먼저 그려 준 뒤 서버 응답으로 바꾼다.
+  // Apps Script 는 첫 응답에 1~3초 걸리므로 이게 체감 속도의 대부분이다.
+  function cacheKey(c) { return NS + 'boot.' + (c || 'cur'); }
+  function readCache(c) { try { return JSON.parse(localStorage.getItem(cacheKey(c)) || 'null'); } catch (e) { return null; } }
+  function writeCache(c, j) { try { localStorage.setItem(cacheKey(c), JSON.stringify(j)); } catch (e) { } }
+  function storeBoot(j) { if (settings.local) return; writeCache(j.cycle, j); if (j.config && j.cycle === j.config.currentCycle) writeCache('cur', j); }
+  function applyBoot(j) {
+    state.config = j.config;
+    document.documentElement.setAttribute('data-ledger', j.config.ledgerType);
+    state.cycle = j.cycle || state.cycle || j.config.currentCycle;
+    state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
+    state.recurring = j.recurring || []; state.due = j.recurringDue || [];
+    state.oldBackend = (j.recurring === undefined);   // 옛 Code.gs 는 recurring 을 모른다
+    state.extra = {};                                   // 달력용 다른 사이클 거래는 다시 받는다
+  }
+  // 입력 폼을 쓰는 중에 화면을 통째로 다시 그리면 입력이 날아가므로, 폼 화면에서는 그리지 않는다 (상태만 바뀌고 다음 이동 때 반영)
+  function renderSoft() { if ((state.view === 'add' || state.view === 'edit') && document.querySelector('#txform')) return; render(); }
   function loadAll() {
-    state.loading = true; state.error = null; render();
-    // 첫 화면에 필요한 것을 요청 한 번(bootstrap)으로 받는다
+    state.error = null;
+    var cached = settings.local ? null : readCache(state.cycle);
+    // 캐시가 "지금 사이클" 것일 때만 먼저 보여준다 (25일이 지나 사이클이 바뀌었으면 서버를 기다린다)
+    if (cached && cached.config && (state.cycle || cached.cycle === LedgerParser.cycleMonth(nowIso(), cached.config.cycleStartDay || 25))) { applyBoot(cached); state.loading = false; state.syncing = true; }
+    else state.loading = true;
+    render();
+    var want = state.cycle;
     return api.call('bootstrap', { cycle: state.cycle || '' }).then(function (j) {
-      state.config = j.config;
-      document.documentElement.setAttribute('data-ledger', j.config.ledgerType);
-      state.cycle = j.cycle || state.cycle || j.config.currentCycle;
-      state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
-      state.recurring = j.recurring || []; state.due = j.recurringDue || [];
-      state.oldBackend = (j.recurring === undefined);   // 옛 Code.gs 는 recurring 을 모른다
-      state.loading = false; render();
+      if (want && state.cycle !== want) return;          // 기다리는 사이 다른 사이클로 옮겼으면 버린다
+      applyBoot(j); storeBoot(j);
+      state.loading = false; state.syncing = false; renderSoft();
       flushQueue();
-    }).catch(function (e) { state.loading = false; state.error = e.message; render(); });
+    }).catch(function (e) { state.loading = false; state.syncing = false; state.error = e.message; renderSoft(); });
   }
   function refresh() {
-    return api.call('bootstrap', { cycle: state.cycle }).then(function (j) {
-      state.config = j.config; state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
-      state.recurring = j.recurring || []; state.due = j.recurringDue || []; state.oldBackend = (j.recurring === undefined); render();
-    }).catch(function (e) { toast('새로고침 실패: ' + e.message); });
+    var want = state.cycle;
+    state.syncing = true; renderSoft();
+    return api.call('bootstrap', { cycle: want }).then(function (j) {
+      if (state.cycle !== want) return;
+      applyBoot(j); storeBoot(j); state.loading = false; state.syncing = false; renderSoft();
+    }).catch(function (e) { state.loading = false; state.syncing = false; renderSoft(); toast('새로고침 실패: ' + e.message); });
+  }
+
+  // 저장 즉시 반영: 서버 응답을 기다리지 않고 화면의 거래·요약을 먼저 고친 뒤, 뒤에서 서버에 보내고 refresh 로 맞춘다.
+  function localTx(tx, id) {
+    var cur = id ? state.rows.filter(function (r) { return r.id === id; })[0] : null;
+    var o = Object.assign({}, cur || {}, tx);
+    o['금액'] = Number(o['금액']) || 0;
+    o['사이클'] = LedgerParser.cycleMonth(o['일시'], (state.config && state.config.cycleStartDay) || 25);
+    if (!o['카테고리']) { var g = LedgerParser.guessCategory(o['가맹점'], state.dict || {}, []); o['카테고리'] = g ? g.category : ''; }
+    o['정산'] = isShared() ? (o['정산'] === 'O' ? 'O' : 'X') : '';
+    o['계획'] = isShared() ? '' : (o['계획'] === 'Y' ? 'Y' : 'N');
+    o['출처'] = o['출처'] || '수동'; o['상태'] = o['상태'] || '확인';
+    return o;
+  }
+  function sortRows() { state.rows.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); }
+  // 요약 숫자를 거래 하나만큼 더하거나(+1) 뺀다(-1). 서버 summary_ 와 같은 규칙.
+  function bumpSummary(o, sign) {
+    var s = state.summary; if (!s || o['사이클'] !== state.cycle || o['상태'] === '취소') return;
+    var amt = (Number(o['금액']) || 0) * sign; var cfg = state.config || {}; var who = o['결제인'] || '';
+    s.count = (s.count || 0) + sign;
+    if (o['유형'] === '수입') { s.income = (s.income || 0) + amt; return; }
+    s.expense = (s.expense || 0) + amt;
+    var k = o['카테고리'] || '미분류'; s.byCategory[k] = (s.byCategory[k] || 0) + amt; if (!s.byCategory[k]) delete s.byCategory[k];
+    s.byPayer[who] = (s.byPayer[who] || 0) + amt; if (!s.byPayer[who]) delete s.byPayer[who];
+    if (isShared() && o['정산'] === 'X') {
+      s.unsettledByPayer[who] = (s.unsettledByPayer[who] || 0) + amt;
+      if (s.unsettledAllByPayer) {
+        s.unsettledAllByPayer[who] = (s.unsettledAllByPayer[who] || 0) + amt;
+        var m = cfg.members || []; var a = s.unsettledAllByPayer[m[0]] || 0, b = s.unsettledAllByPayer[m[1]] || 0, d = (a - b) / 2;
+        s.settlementAll = d === 0 ? null : { from: d > 0 ? m[1] : m[0], to: d > 0 ? m[0] : m[1], amount: Math.round(Math.abs(d)) };
+      }
+    }
+    if (!isShared()) { if (o['계획'] === 'Y') s.planned = (s.planned || 0) + amt; else s.unplanned = (s.unplanned || 0) + amt; }
+    if (o['출처'] === '고정') s.fixed = (s.fixed || 0) + amt;
+    s.variable = s.expense - (s.fixed || 0);
+    if (cfg.budgetTotal) s.remaining = cfg.budgetTotal - s.expense;
   }
 
   // 오프라인 큐: 저장 실패한 add 를 보관하고 다음 기회에 다시 보낸다
@@ -233,12 +291,13 @@
     html += renderHeader();
     if (state.error) html += '<div class="notice">' + esc(state.error) + ' <button class="btn small" data-act="retry">다시 시도</button> <button class="btn small" data-act="goto" data-to="more">설정</button></div>';
     if (state.oldBackend && !settings.local) html += '<div class="notice"><b>시트의 서버가 옛 버전입니다.</b> 거래가 안 보이고 통계·고정 항목이 비어 있을 수 있습니다.<br>시트 → 확장 프로그램 → Apps Script 에 최신 Code.gs 를 붙여 넣고 저장한 뒤, <b>배포 → 배포 관리 → ✎(연필) → 버전 "새 버전" → 배포</b>.<br><a href="' + esc(settings.endpoint) + '" target="_blank" rel="noopener">서버 상태 보기</a> (version 2 가 보이면 완료) <button class="btn small" data-act="retry">다시 확인</button></div>';
-    if (state.loading && !state.config) html += '<div class="empty">불러오는 중…</div>';
+    if (state.loading && state.view !== 'more') html += '<div class="empty">불러오는 중…</div>';
     else if (state.config || state.view === 'more') {   // 연결이 안 돼도 설정 화면은 열려야 한다
       switch (state.view) {
         case 'add': html += renderForm(null); break;
         case 'edit': html += renderForm(state.rows.filter(function (r) { return r.id === state.editId; })[0]); break;
         case 'list': html += renderList(); break;
+        case 'cal': html += renderCal(); break;
         case 'stats': html += renderStats(); break;
         case 'recurring': html += renderRecurring(); break;
         case 'more': html += renderMore(); break;
@@ -256,14 +315,14 @@
     var c = state.cycle || '';
     var showCycle = state.view === 'home' || state.view === 'list' || state.view === 'stats';
     var q = queue().length;
-    return '<header class="top"><h1>' + esc(title) + (settings.local ? ' <span class="sub">(체험)</span>' : '') + (q ? ' <span class="badge" title="연결되면 자동 전송">' + q + '건 대기</span>' : '') + '</h1>' +
+    return '<header class="top"><h1>' + esc(title) + (settings.local ? ' <span class="sub">(체험)</span>' : '') + (state.syncing ? ' <span class="sync" title="서버와 맞추는 중">↻</span>' : '') + (q ? ' <span class="badge" title="연결되면 자동 전송">' + q + '건 대기</span>' : '') + '</h1>' +
       (showCycle ? '<div class="cycle"><button data-act="cycle" data-d="-1" aria-label="이전 달">‹</button><span>' + esc(c) + '<br><small class="muted" style="font-weight:400">' + esc(cycleLabel(c)) + '</small></span><button data-act="cycle" data-d="1" aria-label="다음 달">›</button></div>' : '') +
       '</header>';
   }
 
   function renderNav() {
     var un = state.summary ? state.summary.unconfirmedTotal : 0;
-    function a(v, ico, label, badge) { return '<a href="#' + v + '" class="' + (state.view === v || (v === 'add' && state.view === 'edit') ? 'on' : '') + '"><span class="ico">' + ico + '</span>' + label + (badge ? '<span class="badge">' + badge + '</span>' : '') + '</a>'; }
+    function a(v, ico, label, badge) { return '<a href="#' + v + '" class="' + (state.view === v || (v === 'add' && state.view === 'edit') || (v === 'list' && state.view === 'cal') ? 'on' : '') + '"><span class="ico">' + ico + '</span>' + label + (badge ? '<span class="badge">' + badge + '</span>' : '') + '</a>'; }
     return '<nav class="bottom">' + a('home', '⌂', '홈', un) + a('add', '＋', '입력') + a('list', '☰', '목록') + a('stats', '◔', '통계') + a('more', '⋯', '더보기') + '</nav>';
   }
 
@@ -294,7 +353,7 @@
     }
     if (s.fixed) h += '<div class="sub" style="margin-top:10px">고정 ' + won(s.fixed) + ' · 변동 ' + won(s.variable) + '</div>';
     if (s.income) h += '<div class="sub" style="margin-top:6px">수입 <b class="ok">' + won(s.income) + '</b>' + (s.income > s.expense ? ' · 남는 돈 <b class="ok">' + won(s.income - s.expense) + '</b>' : '') + '</div>';
-    h += '<div style="margin-top:10px"><a href="#stats" class="sub">그래프로 보기 →</a></div>';
+    h += '<div style="margin-top:10px"><a href="#stats" class="sub">그래프로 보기 →</a> <span class="sub">·</span> <a href="#cal" class="sub">달력으로 보기 →</a></div>';
     h += '</div>';
     var cats = Object.keys(s.byCategory).sort(function (a, b) { return s.byCategory[b] - s.byCategory[a]; });
     var max = cats.length ? s.byCategory[cats[0]] : 1;
@@ -312,12 +371,63 @@
     return '<div class="' + cls + '" data-act="edit" data-id="' + esc(r.id) + '"><span class="cat ' + (r['카테고리'] ? '' : 'none') + '">' + esc(r['카테고리'] || '미분류') + '</span><div class="main"><div class="name">' + esc(r['가맹점'] || '(가맹점 없음)') + '</div><div class="meta">' + esc(meta) + '</div></div><span class="amt ' + (r['유형'] === '수입' ? 'income' : '') + '">' + (r['유형'] === '수입' ? '+' : '') + won(r['금액']) + '</span></div>';
   }
 
+  function viewToggle(cur) {
+    return '<div class="seg toggle"><button type="button" class="' + (cur === 'list' ? 'on' : '') + '" data-act="goto" data-to="list">목록</button><button type="button" class="' + (cur === 'cal' ? 'on' : '') + '" data-act="goto" data-to="cal">달력</button></div>';
+  }
   function renderList() {
     var rows = state.rows.filter(function (r) { return r['사이클'] === state.cycle; });
-    if (!rows.length) return '<div class="empty">이 사이클에 거래가 없습니다</div>';
-    var h = '<div class="txlist">', last = null;
+    var h = viewToggle('list');
+    if (!rows.length) return h + '<div class="empty">이 사이클에 거래가 없습니다</div>';
+    h += '<div class="txlist">'; var last = null;
     rows.forEach(function (r) { var k = dayKey(r['일시']); if (k !== last) { h += '<div class="day">' + dayLabel(k) + '</div>'; last = k; } h += txRow(r); });
     return h + '</div>';
+  }
+
+  // ---- 달력 (토스 가계부처럼: 달 단위, 날짜마다 수입/지출 합계, 누르면 아래에 그날 내역)
+  // 달력 한 달은 사이클 두 개에 걸친다 (전달 25일~이달 24일 = 사이클 m-1, 이달 25일~ = 사이클 m). 현재 사이클 밖의 거래는 list 로 받아 state.extra 에 둔다.
+  function monthCycles(m) { var sd = (state.config && state.config.cycleStartDay) || 25; return sd > 1 ? [shiftCycle(m, -1), m] : [m]; }
+  function rowsForCycle(c) { var r = c === state.cycle ? state.rows : state.extra[c]; return r ? r.filter(function (x) { return x['사이클'] === c; }) : null; }
+  function ensureMonth() {
+    monthCycles(state.calMonth).forEach(function (c) {
+      if (rowsForCycle(c) || state.extraLoading[c]) return;
+      state.extraLoading[c] = true;
+      api.call('list', { cycle: c }).then(function (j) { state.extra[c] = j.rows || []; }).catch(function (e) { state.extra[c] = []; toast('불러오기 실패: ' + e.message); })
+        .then(function () { delete state.extraLoading[c]; if (state.view === 'cal') render(); });
+    });
+  }
+  function renderCal() {
+    var todayK = dayKey(nowIso());
+    if (!state.calMonth) state.calMonth = todayK.substring(0, 7);
+    if (state.calDay === null) state.calDay = todayK;
+    var m = state.calMonth; var y = +m.split('-')[0], mo = +m.split('-')[1];
+    var rows = [], missing = false;
+    monthCycles(m).forEach(function (c) { var r = rowsForCycle(c); if (r) rows = rows.concat(r); else missing = true; });
+    if (missing) ensureMonth();
+    var byDay = {};
+    rows.forEach(function (r) { if (r['상태'] === '취소') return; var k = dayKey(r['일시']); var d = byDay[k] || (byDay[k] = { inc: 0, exp: 0, rows: [] }); if (r['유형'] === '수입') d.inc += Number(r['금액']) || 0; else d.exp += Number(r['금액']) || 0; d.rows.push(r); });
+    var incT = 0, expT = 0; Object.keys(byDay).forEach(function (k) { if (k.substring(0, 7) === m) { incT += byDay[k].inc; expT += byDay[k].exp; } });
+    var startOff = new Date(y, mo - 1, 1).getDay(); var days = new Date(y, mo, 0).getDate();
+    var sel = state.calDay && state.calDay.substring(0, 7) === m ? state.calDay : null;
+    var sd = (state.config && state.config.cycleStartDay) || 25;
+    var h = viewToggle('cal');
+    h += '<div class="card cal"><div class="cal-head"><button type="button" data-act="calmonth" data-d="-1" aria-label="이전 달">‹</button><b>' + y + '년 ' + mo + '월</b><button type="button" data-act="calmonth" data-d="1" aria-label="다음 달">›</button></div>';
+    h += '<div class="sub" style="text-align:center;margin-bottom:8px">수입 <b class="ok">' + won(incT) + '</b> · 지출 <b>' + won(expT) + '</b>' + (missing ? ' <span class="sync">↻</span>' : '') + '</div>';
+    h += '<div class="cal-grid">' + ['일', '월', '화', '수', '목', '금', '토'].map(function (w, i) { return '<div class="wd' + (i === 0 ? ' sun' : '') + '">' + w + '</div>'; }).join('');
+    for (var i = 0; i < startOff; i++) h += '<div class="d pad"></div>';
+    for (var d = 1; d <= days; d++) {
+      var k = m + '-' + p2(d); var v = byDay[k];
+      h += '<button type="button" class="d' + (k === todayK ? ' today' : '') + (k === sel ? ' sel' : '') + (d === sd ? ' cyc' : '') + '" data-act="calday" data-k="' + k + '"><span class="n">' + d + '</span>' +
+        (v && v.inc ? '<span class="inc">+' + short(v.inc) + '</span>' : '') + (v && v.exp ? '<span class="exp">-' + short(v.exp) + '</span>' : '') + '</button>';
+    }
+    h += '</div><div class="sub" style="margin-top:8px;font-size:12px">' + sd + '일(세로줄)부터 새 사이클 · 만원 단위는 반올림</div></div>';
+    if (sel) {
+      var v2 = byDay[sel];
+      h += '<div class="card"><div class="row"><h2 style="margin:0">' + esc(dayLabel(sel)) + '</h2><button type="button" class="btn small primary" data-act="addon" data-date="' + sel + '">＋ 이 날 입력</button></div>';
+      if (v2) { v2.rows.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); h += '<div class="sub" style="margin:8px 0">' + (v2.inc ? '수입 ' + won(v2.inc) + ' · ' : '') + '지출 ' + won(v2.exp) + '</div><div class="txlist">' + v2.rows.map(txRow).join('') + '</div>'; }
+      else h += '<div class="empty" style="padding:16px 0">거래가 없습니다</div>';
+      h += '</div>';
+    } else h += '<div class="empty">날짜를 누르면 그날 내역이 나옵니다</div>';
+    return h;
   }
 
   function renderForm(row) {
@@ -325,7 +435,7 @@
     var v = Object.assign({ '일시': nowIso(), '유형': '지출', '금액': '', '가맹점': '', '카테고리': '', '항목': '', '결제인': me(), '정산': 'X', '계획': 'N', '출처': '수동', '원문': '' }, row || {}, (!edit && pf) ? pf.tx : {});
     var cats = state.config.categories.slice(); if (v['카테고리'] && cats.indexOf(v['카테고리']) < 0) cats.push(v['카테고리']);
     var h = '<form id="txform" class="card" data-id="' + esc(row ? row.id : '') + '">';
-    if (!edit && pf) h += '<div class="notice ' + (pf.tx['금액'] ? 'info' : '') + '">' + esc(pf.note) + (pf.raw ? '<details class="raw"><summary>읽은 원문</summary><pre>' + esc(pf.raw) + '</pre></details>' : '') + '</div>';
+    if (!edit && pf && pf.note) h += '<div class="notice ' + (pf.tx['금액'] ? 'info' : '') + '">' + esc(pf.note) + (pf.raw ? '<details class="raw"><summary>읽은 원문</summary><pre>' + esc(pf.raw) + '</pre></details>' : '') + '</div>';
     if (edit && row['상태'] === '미확인') h += '<div class="notice">자동 수집된 거래입니다. 내용을 확인하고 저장하면 확인 처리됩니다.' + (row['원문'] ? '<details class="raw"><summary>원문</summary><pre>' + esc(row['원문']) + '</pre></details>' : '') + '</div>';
     h += '<div class="row"><div class="seg" data-name="유형"><button type="button" class="' + (v['유형'] === '지출' ? 'on' : '') + '" data-v="지출">지출</button><button type="button" class="' + (v['유형'] === '수입' ? 'on' : '') + '" data-v="수입">수입</button></div>';
     if (isShared()) h += '<div class="seg" data-name="결제인">' + state.config.members.map(function (m) { return '<button type="button" class="' + (v['결제인'] === m ? 'on' : '') + '" data-v="' + esc(m) + '">' + esc(m) + '</button>'; }).join('') + '</div>';
@@ -612,13 +722,24 @@
     tx['상태'] = '확인';
     state.prefill = null;
     var btn = form.querySelector('[type=submit]'); btn.disabled = true;
+    // 먼저 화면에 반영하고(즉시), 서버에는 뒤에서 보낸다. 실패하면 되돌린다.
+    var local = localTx(tx, id); var idx = -1, prev = null;
+    if (id) { idx = state.rows.map(function (r) { return r.id; }).indexOf(id); prev = idx >= 0 ? state.rows[idx] : null; if (prev) { bumpSummary(prev, -1); state.rows[idx] = local; bumpSummary(local, 1); sortRows(); } }
+    else { local.id = 'tmp-' + Date.now(); if (local['사이클'] === state.cycle) { state.rows.push(local); sortRows(); bumpSummary(local, 1); } }
+    delete state.extra[local['사이클']];
+    toast(id ? '수정했습니다' : '저장했습니다');
+    go(state.returnTo || 'list'); state.returnTo = null;
     var p = id ? api.call('update', { id: id, tx: tx }) : api.call('add', { tx: tx });
-    p.then(function () { toast(id ? '수정했습니다' : '저장했습니다'); go('list'); return refresh(); })
-      .catch(function (err) {
-        btn.disabled = false;
-        if (!id && !settings.local && /fetch|network|Failed/i.test(err.message)) { var q = queue(); q.push(tx); saveQueue(q); toast('오프라인: 연결되면 자동으로 저장합니다 (' + q.length + '건 대기)'); go('list'); }
-        else toast('실패: ' + err.message);
-      });
+    p.then(function (j) {
+      if (!id && j.row) { var k = state.rows.map(function (r) { return r.id; }).indexOf(local.id); if (k >= 0) state.rows[k] = j.row; }
+      return refresh();
+    }).catch(function (err) {
+      if (id) { if (prev) { bumpSummary(local, -1); state.rows[idx] = prev; bumpSummary(prev, 1); } }
+      else { if (local['사이클'] === state.cycle) { state.rows = state.rows.filter(function (r) { return r.id !== local.id; }); bumpSummary(local, -1); } }
+      if (!id && !settings.local && /fetch|network|Failed/i.test(err.message)) { var q = queue(); q.push(tx); saveQueue(q); toast('오프라인: 연결되면 자동으로 저장합니다 (' + q.length + '건 대기)'); }
+      else toast('저장 실패, 되돌렸습니다: ' + err.message, null, null, 6000);
+      renderSoft();
+    });
   }
 
   var pendingDelete = null;
@@ -628,7 +749,10 @@
     switch (act) {
       case 'goto': go(el.getAttribute('data-to')); break;
       case 'retry': loadAll(); break;
-      case 'cycle': state.cycle = shiftCycle(state.cycle, Number(el.getAttribute('data-d'))); state.loading = true; render(); refresh().then(function () { state.loading = false; render(); }); break;
+      case 'cycle': { state.cycle = shiftCycle(state.cycle, Number(el.getAttribute('data-d'))); var cc = settings.local ? null : readCache(state.cycle); if (cc) { applyBoot(cc); state.loading = false; } else state.loading = true; render(); refresh(); break; }
+      case 'calmonth': state.calMonth = shiftCycle(state.calMonth, Number(el.getAttribute('data-d'))); state.calDay = ''; render(); break;
+      case 'calday': state.calDay = el.getAttribute('data-k'); render(); break;
+      case 'addon': state.prefill = { tx: { '일시': el.getAttribute('data-date') + 'T12:00:00' } }; state.returnTo = 'cal'; go('add'); break;
       case 'edit': go('edit/' + el.getAttribute('data-id')); break;
       case 'settle':
         if (!confirm('지금까지의 미정산 거래를 모두 정산 완료로 표시할까요?')) return;
@@ -636,11 +760,11 @@
         break;
       case 'delete': {
         var id = el.getAttribute('data-id'); var row = state.rows.filter(function (r) { return r.id === id; })[0];
-        state.rows = state.rows.filter(function (r) { return r.id !== id; });
-        go('list');
+        state.rows = state.rows.filter(function (r) { return r.id !== id; }); if (row) bumpSummary(row, -1);
+        go(state.returnTo || 'list'); state.returnTo = null;
         var timer = setTimeout(function () { pendingDelete = null; api.call('delete', { id: id }).then(refresh).catch(function (err) { toast('삭제 실패: ' + err.message); refresh(); }); }, 5000);
         pendingDelete = { id: id, row: row, timer: timer };
-        toast('삭제했습니다', '되돌리기', function () { clearTimeout(timer); pendingDelete = null; state.rows.push(row); state.rows.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); render(); }, 5000);
+        toast('삭제했습니다', '되돌리기', function () { clearTimeout(timer); pendingDelete = null; state.rows.push(row); sortRows(); bumpSummary(row, 1); render(); }, 5000);
         break;
       }
       case 'toastaction': if (state.toast && state.toast.onAction) { var fn = state.toast.onAction; state.toast = null; renderToast(); fn(); } break;
