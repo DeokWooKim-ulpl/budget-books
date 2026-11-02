@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-02f';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-02g';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -842,9 +842,11 @@ function readExpenseBlock_(vals, r, c, ctx, out, type) {
   // 블록 제목에 "2025년12월 25일~" 처럼 연도·월이 있으면 그걸 사이클 시작으로 본다 (탭 이름 연도보다 우선).
   // 시작 달보다 작은 달은 다음 해 (12월 시작 사이클의 1월 거래 등).
   var blockYear = null, blockMonth = null;
+  // 제목은 블록의 왼쪽 끝 칸에 있으므로, 머리글 열에서 왼쪽으로 가장 가까운 것을 쓴다 (옆 블록 제목을 집지 않게)
   for (var up2 = 1; up2 <= 3 && r - up2 >= 0; up2++) {
-    for (var k2 = -1; k2 <= 4; k2++) {
-      var bt = /(\d{4})\s*년\s*(\d{1,2})\s*월/.exec(String((vals[r - up2] || [])[c + k2] || ''));
+    var trow = vals[r - up2] || [];
+    for (var k2 = Math.min(c + 4, trow.length - 1); k2 >= 0; k2--) {
+      var bt = /(\d{4})\s*년\s*(\d{1,2})\s*월/.exec(String(trow[k2] || ''));
       if (bt) { blockYear = Number(bt[1]); blockMonth = Number(bt[2]); break; }
     }
     if (blockYear) break;
