@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-02d';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-02e';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -1465,6 +1465,12 @@ function migrateSafeBox(force) {
   Logger.log(log.join('\n'));
   return log;
 }
+// 연도가 들어 있는 날짜 칸 (Date 객체 또는 "2024/07/02"). cellDate_ 는 탭 이름 연도로 덮어쓰므로 여기선 쓰지 않는다.
+function fullDate_(v) {
+  if (v instanceof Date) return isoLocal_(v).substring(0, 10) + 'T12:00:00';
+  var m = /(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})/.exec(String(v || ''));
+  return m ? m[1] + '-' + (m[2].length < 2 ? '0' : '') + m[2] + '-' + (m[3].length < 2 ? '0' : '') + m[3] + 'T12:00:00' : null;
+}
 function accountByName_(name) {
   var hit = tabRead_(SHEET_ACC, ACOLS).filter(function (a) { return a['이름'] === name; })[0];
   if (hit) return hit;
@@ -1489,7 +1495,7 @@ function migrateLoan(force) {
     var exist = tabRead_(SHEET_DEBT, DCOLS).filter(function (d) { return d['이름'] === title; })[0];
     if (exist && !force) { log.push(name + ': 이미 있음 (' + title + ')'); return; }
     var M = cellAmount_(kv['월상환금']), total = cellAmount_(kv['요상환 금액'] || kv['총상환액']);
-    var start = cellDate_(kv['대출일자'] || kv['대출일'], { year: new Date().getFullYear() }, null);
+    var start = fullDate_(kv['대출일자'] || kv['대출일']);
     var item = { id: exist ? exist.id : '', '이름': title, '기관': String(kv['대출기관'] || '').trim(), '원금': P, '연이율': Number(String(kv['이율'] || kv['이율 [%]'] || kv['연이율'] || '').replace(/[^\d.]/g, '')) || 0,
       '월상환금': M, '시작일': start ? start.substring(0, 10) : '', '총회차': M && total ? Math.round(total / M) : '', '납입회차': '', '소유': owner, '메모': String(kv['상환방식'] || '').trim(), '활성': 'Y' };
     var saved = debtSave_(item);
@@ -1510,7 +1516,7 @@ function migrateReceipts(force) {
   var groups = [], cur = null;
   for (var r = 1; r < vals.length; r++) {
     var row = vals[r]; var name = String(row[ci['구매 항목']] || '').trim(); var price = cellAmount_(row[ci['가격']]);
-    var store = String(row[ci['구입처']] || '').trim(); var date = cellDate_(row[ci['구입 날짜']], { year: new Date().getFullYear() }, cur ? cur.date : null);
+    var store = String(row[ci['구입처']] || '').trim(); var date = fullDate_(row[ci['구입 날짜']]) || (cur ? cur.date : null);
     if (!name && !price) { cur = null; continue; }
     if (!cur || (store && cur.store !== store) || (date && cur.date !== date)) { cur = { store: store, date: date, items: [], total: 0 }; groups.push(cur); }
     if (name === '총계' || name === '합계') { cur.total = price; cur = null; continue; }
