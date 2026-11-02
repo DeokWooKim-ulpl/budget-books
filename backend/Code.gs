@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-02b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-02c';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -63,7 +63,7 @@ function doPost(e) {
 var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
-  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1 };
+  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1 };
 
 function handle_(req) {
   CACHE_ = {};
@@ -101,6 +101,7 @@ function handle_(req) {
         case 'itemsSave': return json_({ ok: true, items: itemsSave_(req.txId, req.items || []) });
         case 'budgetSave': return json_({ ok: true, budget: budgetSave_(req) });
         case 'renameCategory': return json_(Object.assign({ ok: true }, renameCategory_(req.from, req.to), { categories: categoryStats_(), config: publicConfig_() }));
+        case 'migrate': case 'setConfig': case 'updateServer': return json_(admin_(req));
       }
     } finally { lock.releaseLock(); }
   } catch (err) {
@@ -138,6 +139,7 @@ function read_(req) {
     case 'items': return { ok: true, items: itemsRead_(req.txId) };
     case 'budget': { var bc = req.cycle || currentCycle_(); return { ok: true, cycle: bc, budget: budgetFor_(bc), suggest: budgetSuggest_(bc) }; }
     case 'categories': return { ok: true, categories: categoryStats_() };
+    case 'health': return admin_(req);
     default: return { ok: false, error: 'unknown action' };
   }
 }
@@ -933,6 +935,7 @@ function onOpen() {
     .addItem('세이프 박스 탭 → 통장 이관', 'migrateSafeBoxMenu')
     .addItem('대출 상환 표 → 부채 이관', 'migrateLoanMenu')
     .addItem('영수증 탭 → 품목 이관', 'migrateReceiptsMenu')
+    .addItem('고정지출 표 → 고정 항목 이관', 'migrateFixedCostsMenu')
     .addSeparator()
     .addItem('지금 드라이브로 백업', 'backupMenu')
     .addItem('매일 자동 백업 켜기', 'installBackupTrigger')
@@ -1606,3 +1609,74 @@ function installUpdateTrigger() {
 }
 function installUpdateTriggerMenu() { menuRun_('자동 업데이트 켜기', installUpdateTrigger); }
 function updateServerAuto() { try { updateServer(false); } catch (e) { Logger.log('자동 업데이트 실패: ' + e); } }
+
+// ================================================================ 관리 액션 (PIN 으로 보호. 앱이 아니라 운영자가 API 로 쓴다)
+// migrate: what = legacy | safebox | loan | receipts | fixed, force = true 면 다시.  setConfig: 설정 탭 값 바꾸기 (PIN 제외).  updateServer: GitHub 최신 코드로 자기 갱신.
+function admin_(req) {
+  switch (req.action) {
+    case 'migrate': {
+      var fn = { legacy: migrateLegacy, safebox: migrateSafeBox, loan: migrateLoan, receipts: migrateReceipts, fixed: migrateFixedCosts }[req.what];
+      if (!fn) throw new Error('what 은 legacy | safebox | loan | receipts | fixed');
+      return { ok: true, log: fn(!!req.force) };
+    }
+    case 'setConfig': {
+      var key = String(req.key || '').trim();
+      if (!key || key === 'PIN') throw new Error('바꿀 수 없는 키');
+      var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CFG);
+      var vals = sh.getDataRange().getValues(); var r = -1;
+      for (var i = 1; i < vals.length; i++) if (String(vals[i][0]).trim() === key) { r = i + 1; break; }
+      if (r < 0) { r = sh.getLastRow() + 1; sh.getRange(r, 1).setValue(key); }
+      sh.getRange(r, 2).setNumberFormat('@').setValue(req.value === undefined || req.value === null ? '' : String(req.value));
+      CACHE_ = {};
+      return { ok: true, key: key, value: String(req.value === undefined ? '' : req.value), config: publicConfig_() };
+    }
+    case 'updateServer': return { ok: true, log: updateServer(!!req.force) };
+    case 'health': return { ok: true, version: API_VERSION, build: SERVER_BUILD, tabs: SpreadsheetApp.getActive().getSheets().map(function (s) { return s.getName(); }), triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+  }
+  return null;
+}
+
+// "고정지출비용" 표 → 고정 탭. 머리글에 카테고리·금액과 (지출처 또는 지출 일자) 가 있는 블록을 찾는다.
+// 이름 = 지출처(없으면 카테고리), 일 = "매월 25일" 에서, 소유 = 블록 위쪽 6행 안에 멤버 이름이 있으면 그 사람. 같은 이름·금액이 이미 있으면 건너뜀.
+function migrateFixedCosts(force) {
+  setup(); CACHE_ = {};
+  var ss = SpreadsheetApp.getActive();
+  var members = split_(cfg_('MEMBERS')); var type = cfg_('LEDGER_TYPE'); var startDay = startDay_();
+  var have = readRecurring_();
+  var log = [], n = 0, skipped = 0;
+  ss.getSheets().forEach(function (sh) {
+    var name = sh.getName();
+    if (APP_SHEETS_.indexOf(name) >= 0) return;
+    var vals = sh.getDataRange().getValues();
+    for (var r = 0; r < vals.length; r++) {
+      var ci = {};
+      for (var c = 0; c < vals[r].length; c++) { var h = String(vals[r][c]).trim(); if (h) ci[h] = c; }
+      var cat = ci['카테고리'], amt = ci['금액'], store = ci['지출처'] !== undefined ? ci['지출처'] : ci['구매처'];
+      var dayCol = ci['지출 일자'] !== undefined ? ci['지출 일자'] : (ci['예상 지출일자'] !== undefined ? ci['예상 지출일자'] : ci['지출일자']);
+      if (cat === undefined || amt === undefined || (store === undefined && dayCol === undefined) || ci['지출일자'] !== undefined && ci['결제인'] !== undefined) continue;   // 거래 표(지출일자+결제인)는 제외
+      var owner = members[0];
+      for (var up = r - 1; up >= Math.max(0, r - 6); up--) { var line = vals[up].join(' '); var hit = members.filter(function (m) { return line.indexOf(m) >= 0; })[0]; if (hit) { owner = hit; break; } }
+      var cnt = 0;
+      for (var i = r + 1; i < vals.length; i++) {
+        var row = vals[i];
+        var amount = cellAmount_(row[amt]); var category = String(row[cat] || '').trim(); var st = store !== undefined ? String(row[store] || '').trim() : '';
+        if (!amount && !category && !st) break;
+        var itemName = st || category;
+        if (!amount || !itemName || /합계|총계/.test(String(row[0]) + category + st)) continue;
+        var dm = dayCol !== undefined ? /(\d{1,2})\s*일/.exec(String(row[dayCol] || '')) : null;
+        var day = dm ? Number(dm[1]) : startDay;
+        var memo = ['[이관] ' + name, dayCol !== undefined && row[dayCol] ? String(row[dayCol]).trim() : '', ci['지출 위치'] !== undefined ? String(row[ci['지출 위치']] || '').trim() : ''].filter(Boolean).join(' · ');
+        if (!force && have.some(function (x) { return x['이름'] === itemName && x['금액'] === amount; })) { skipped++; continue; }
+        saveRecurring_({ '유형': '지출', '이름': itemName, '금액': amount, '카테고리': category, '결제인': owner, '일': day, '계획': 'Y', '활성': 'Y', '메모': memo });
+        n++; cnt++;
+      }
+      if (cnt) log.push(name + ' (' + owner + '): ' + cnt + '건');
+      r += cnt;
+    }
+  });
+  log.push('고정 항목 ' + n + '건 추가' + (skipped ? ', 이미 있어 건너뜀 ' + skipped + '건' : ''));
+  if (n) log.push('앱 → 더보기 → 고정 항목에서 금액·날짜를 확인하고, 홈의 "거래에 반영"으로 이번 사이클에 넣으세요.');
+  Logger.log(log.join('\n'));
+  return log;
+}
+function migrateFixedCostsMenu() { menuRun_('고정지출 표 → 고정 항목 이관', function () { return migrateFixedCosts(false); }); }
