@@ -19,6 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
+var SERVER_BUILD = '2026-11-02b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -47,7 +48,7 @@ var DEFAULT_CFG = {
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.action) return handle_(p);
-  return json_({ ok: true, app: 'ledger', version: API_VERSION, ledgerType: cfg_('LEDGER_TYPE'), hint: 'POST JSON {action, pin, ...}' });
+  return json_({ ok: true, app: 'ledger', version: API_VERSION, build: SERVER_BUILD, ledgerType: cfg_('LEDGER_TYPE'), hint: 'POST JSON {action, pin, ...}' });
 }
 
 function doPost(e) {
@@ -935,6 +936,9 @@ function onOpen() {
     .addSeparator()
     .addItem('지금 드라이브로 백업', 'backupMenu')
     .addItem('매일 자동 백업 켜기', 'installBackupTrigger')
+    .addSeparator()
+    .addItem('서버 업데이트 (GitHub 최신 코드로)', 'updateServerMenu')
+    .addItem('자동 업데이트 켜기 (매시간)', 'installUpdateTriggerMenu')
     .addToUi();
 }
 /** 거래 탭의 사이클 열이 날짜로 저장된 것을 "yyyy-mm" 글자로 되돌린다. 앱은 읽을 때 알아서 처리하지만 시트에서 보기 좋게 하려면 한 번 실행. */
@@ -1535,3 +1539,70 @@ function menuRun_(title, fn) {
   try { var log = fn(); ui.alert(title, (log || []).join('\n'), ui.ButtonSet.OK); }
   catch (e) { ui.alert(title + ' 중단', String(e.message || e), ui.ButtonSet.OK); }
 }
+
+// ================================================================ 서버 자동 업데이트 (Apps Script API 로 자기 자신을 갱신)
+// GitHub 의 backend/Code.gs, backend/Parser.gs 를 받아 이 프로젝트의 코드를 바꾸고, 새 버전을 만들어 기존 웹앱 배포에 연결한다.
+// 한 번만 준비: (1) https://script.google.com/home/usersettings 에서 "Google Apps Script API" 켜기
+//              (2) appsscript.json 에 oauthScopes (backend/appsscript.json 참고)  (3) 편집기에서 updateServer 한 번 실행해 권한 허용
+// 그 뒤로는 시트 메뉴 "서버 업데이트" 또는 installUpdateTrigger() 로 매시간 자동.
+var UPDATE_BASE = 'https://raw.githubusercontent.com/DeokWooKim-ulpl/budget-books/main/backend/';
+var UPDATE_FILES = [['Code', 'Code.gs'], ['Parser', 'Parser.gs']];
+
+function updateServer(force) {
+  var log = [];
+  var token = ScriptApp.getOAuthToken();
+  var scriptId = ScriptApp.getScriptId();
+  var api = 'https://script.googleapis.com/v1/projects/' + scriptId;
+  function call(method, url, body) {
+    var res = UrlFetchApp.fetch(url, { method: method, contentType: 'application/json', muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + token }, payload: body ? JSON.stringify(body) : undefined });
+    var code = res.getResponseCode(); var text = res.getContentText();
+    if (code >= 300) throw new Error('Apps Script API ' + code + ': ' + text.substring(0, 300) + (code === 403 ? '\n→ https://script.google.com/home/usersettings 에서 Apps Script API 를 켰는지, appsscript.json 에 script.projects / script.deployments 권한이 있는지 확인' : ''));
+    return text ? JSON.parse(text) : {};
+  }
+  // 1) GitHub 에서 새 코드
+  var fresh = {};
+  UPDATE_FILES.forEach(function (f) {
+    var r = UrlFetchApp.fetch(UPDATE_BASE + f[1] + '?t=' + Date.now(), { muteHttpExceptions: true });
+    if (r.getResponseCode() !== 200) throw new Error('GitHub 에서 ' + f[1] + ' 을 받지 못했습니다 (' + r.getResponseCode() + ')');
+    fresh[f[0]] = r.getContentText();
+  });
+  var m = /var API_VERSION = (\d+)/.exec(fresh.Code);
+  var newVer = m ? Number(m[1]) : 0;
+  var stamp = (/var SERVER_BUILD = '([^']*)'/.exec(fresh.Code) || [])[1] || '';
+  log.push('GitHub 버전 ' + newVer + (stamp ? ' (' + stamp + ')' : '') + ' / 현재 ' + API_VERSION + (typeof SERVER_BUILD !== 'undefined' ? ' (' + SERVER_BUILD + ')' : ''));
+  // 2) 현재 프로젝트 내용 (manifest 등은 그대로 두고 Code/Parser 만 바꾼다)
+  var content = call('get', api + '/content');
+  var files = content.files || [];
+  var same = UPDATE_FILES.every(function (f) { var cur = files.filter(function (x) { return x.name === f[0]; })[0]; return cur && cur.source === fresh[f[0]]; });
+  if (same && !force) { log.push('이미 최신입니다. 바꾼 것 없음'); Logger.log(log.join('\n')); return log; }
+  var known = {};
+  files = files.map(function (x) { if (fresh[x.name] !== undefined) { known[x.name] = true; return { name: x.name, type: 'SERVER_JS', source: fresh[x.name] }; } return { name: x.name, type: x.type, source: x.source }; });
+  UPDATE_FILES.forEach(function (f) { if (!known[f[0]]) files.push({ name: f[0], type: 'SERVER_JS', source: fresh[f[0]] }); });
+  if (!files.some(function (x) { return x.type === 'JSON'; })) throw new Error('appsscript.json(manifest) 을 찾지 못해 중단');
+  call('put', api + '/content', { files: files });
+  log.push('코드 교체: ' + UPDATE_FILES.map(function (f) { return f[0]; }).join(', '));
+  // 3) 새 버전
+  var ver = call('post', api + '/versions', { description: '자동 업데이트 v' + newVer + ' ' + stamp + ' ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm') });
+  log.push('새 버전 ' + ver.versionNumber);
+  // 4) 기존 웹앱 배포(HEAD 제외)를 새 버전으로
+  var deps = (call('get', api + '/deployments').deployments || []).filter(function (d) { return d.deploymentConfig && d.deploymentConfig.versionNumber; });
+  if (!deps.length) throw new Error('배포가 없습니다. 편집기에서 배포 → 새 배포(웹 앱) 를 한 번 해 두세요');
+  deps.forEach(function (d) {
+    call('put', api + '/deployments/' + d.deploymentId, { deploymentConfig: { scriptId: scriptId, versionNumber: ver.versionNumber, manifestFileName: 'appsscript', description: d.deploymentConfig.description || '가계부 앱' } });
+    log.push('배포 ' + d.deploymentId.substring(0, 12) + '… → 버전 ' + ver.versionNumber);
+  });
+  log.push('완료. /exec 주소에서 version ' + newVer + ' 확인');
+  Logger.log(log.join('\n'));
+  return log;
+}
+function updateServerMenu() { menuRun_('서버 업데이트', function () { return updateServer(false); }); }
+function updateServerForceMenu() { menuRun_('서버 업데이트 (강제)', function () { return updateServer(true); }); }
+/** 매시간 GitHub 를 확인해 새 코드가 있으면 자동으로 갱신·배포한다. 편집기에서 한 번만 실행. */
+function installUpdateTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'updateServerAuto') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('updateServerAuto').timeBased().everyHours(1).create();
+  Logger.log('자동 업데이트 트리거 설치됨 (매시간)');
+  return ['자동 업데이트: 매시간 GitHub 확인'];
+}
+function installUpdateTriggerMenu() { menuRun_('자동 업데이트 켜기', installUpdateTrigger); }
+function updateServerAuto() { try { updateServer(false); } catch (e) { Logger.log('자동 업데이트 실패: ' + e); } }
