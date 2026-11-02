@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-02a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-02c';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
