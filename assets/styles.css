@@ -187,3 +187,41 @@ details.items summary .muted { font-weight: 400; font-size: 13px; }
 .field .seg { margin-top: 2px; }
 .seg button { white-space: nowrap; }
 @media (max-width: 380px) { .seg button { padding: 10px 12px; font-size: 14px; } }
+
+/* PC 레이아웃 (폭 900px 이상): 넓게, 카드 두 열, 글자 크게. 폰은 그대로. */
+@media (min-width: 900px) {
+  html, body { font-size: 17px; }
+  #app { max-width: 1120px; padding: 0 24px 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; align-items: start; }
+  /* 두 열에 걸치는 것: 제목줄, 메뉴, 안내, 목록, 폼, 달력, 검색창, 전환 버튼, 큰 버튼 */
+  #app > header.top, #app > nav.bottom, #app > .notice, #app > .empty, #app > .seg.toggle, #app > .searchbar, #app > .txlist, #app > form, #app > .card.cal, #app > .btn, #app > .sub, #app > details { grid-column: 1 / -1; }
+  #app > form { max-width: 760px; width: 100%; justify-self: center; }
+  #app > .btn.block { max-width: 760px; justify-self: center; }
+  header.top h1 { font-size: 24px; }
+  .cycle span { min-width: 140px; font-size: 16px; }
+  .card { padding: 22px 24px; margin: 14px 0; }
+  .card h2 { font-size: 15px; }
+  .big { font-size: 40px; }
+  .sub { font-size: 15px; }
+  .tx { padding: 14px 18px; }
+  .tx .cat { font-size: 13px; max-width: 120px; }
+  .tx .meta { font-size: 13px; }
+  .txlist .day { font-size: 14px; }
+  .btn { padding: 13px 20px; }
+  .cal-grid .d { min-height: 84px; }
+  .cal-grid .d .n { font-size: 16px; width: 28px; height: 28px; }
+  .cal-grid .d .inc, .cal-grid .d .exp { font-size: 13px; }
+  .cal-grid .d .s1 { font-size: 12px; } .cal-grid .d .s2 { font-size: 11px; } .cal-grid .d .s3 { font-size: 10px; }
+  .donut { width: 180px; height: 180px; }
+  /* PC 에서는 메뉴를 맨 위 전체 폭에 고정하고(DOM 순서는 마지막이지만 grid-row 1 로 끌어올림), 제목줄은 그 아래 */
+  #app > nav.bottom { grid-row: 1; grid-column: 1 / -1; position: sticky; top: 0; max-width: none; width: 100%; justify-self: stretch; height: 56px; margin: 0 0 4px; border-radius: 0 0 14px 14px; }
+  #app > header.top { grid-row: 2; position: static; padding-top: 12px; }
+  #app > .seg.toggle { justify-self: start; }
+  nav.bottom a { font-size: 14px; flex-direction: row; gap: 8px; }
+  nav.bottom a .ico { font-size: 20px; }
+  nav.bottom a .badge { position: static; margin-left: 4px; }
+  .linklist a { padding: 14px 6px; font-size: 17px; }
+  .toast { bottom: 24px; }
+}
+@media (min-width: 1400px) {
+  #app { max-width: 1320px; }
+}
