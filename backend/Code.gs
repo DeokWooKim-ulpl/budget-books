@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-02c';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-02d';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -63,7 +63,7 @@ function doPost(e) {
 var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
-  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1 };
+  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1 };
 
 function handle_(req) {
   CACHE_ = {};
@@ -101,7 +101,7 @@ function handle_(req) {
         case 'itemsSave': return json_({ ok: true, items: itemsSave_(req.txId, req.items || []) });
         case 'budgetSave': return json_({ ok: true, budget: budgetSave_(req) });
         case 'renameCategory': return json_(Object.assign({ ok: true }, renameCategory_(req.from, req.to), { categories: categoryStats_(), config: publicConfig_() }));
-        case 'migrate': case 'setConfig': case 'updateServer': return json_(admin_(req));
+        case 'migrate': case 'setConfig': case 'updateServer': case 'recurringPurge': return json_(admin_(req));
       }
     } finally { lock.releaseLock(); }
   } catch (err) {
@@ -1631,6 +1631,16 @@ function admin_(req) {
       return { ok: true, key: key, value: String(req.value === undefined ? '' : req.value), config: publicConfig_() };
     }
     case 'updateServer': return { ok: true, log: updateServer(!!req.force) };
+    case 'recurringPurge': {   // 메모가 memoPrefix 로 시작하는 고정 항목을 한 번에 지운다 (잘못된 이관 되돌리기)
+      var pre = String(req.memoPrefix || ''); if (!pre) throw new Error('memoPrefix 필요');
+      var sh = recSheet_(); var last = sh.getLastRow(); if (last < 2) return { ok: true, deleted: 0 };
+      var vals = sh.getRange(2, 1, last - 1, RCOLS.length).getValues();
+      var keep = vals.filter(function (row) { return !(row[0] && String(row[RCOL['메모']]).indexOf(pre) === 0); });
+      sh.getRange(2, 1, last - 1, RCOLS.length).clearContent();
+      if (keep.length) sh.getRange(2, 1, keep.length, RCOLS.length).setValues(keep);
+      CACHE_.rec = null;
+      return { ok: true, deleted: vals.length - keep.length, remaining: keep.length };
+    }
     case 'health': return { ok: true, version: API_VERSION, build: SERVER_BUILD, tabs: SpreadsheetApp.getActive().getSheets().map(function (s) { return s.getName(); }), triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
   }
   return null;
@@ -1653,7 +1663,9 @@ function migrateFixedCosts(force) {
       for (var c = 0; c < vals[r].length; c++) { var h = String(vals[r][c]).trim(); if (h) ci[h] = c; }
       var cat = ci['카테고리'], amt = ci['금액'], store = ci['지출처'] !== undefined ? ci['지출처'] : ci['구매처'];
       var dayCol = ci['지출 일자'] !== undefined ? ci['지출 일자'] : (ci['예상 지출일자'] !== undefined ? ci['예상 지출일자'] : ci['지출일자']);
-      if (cat === undefined || amt === undefined || (store === undefined && dayCol === undefined) || ci['지출일자'] !== undefined && ci['결제인'] !== undefined) continue;   // 거래 표(지출일자+결제인)는 제외
+      // 고정지출 표만: 지출처 열이 있고, 거래 표(지출일자·구매처·세부내역·항목·결제인)가 아니어야 한다
+      if (cat === undefined || amt === undefined || ci['지출처'] === undefined) continue;
+      if (ci['지출일자'] !== undefined || ci['구매처'] !== undefined || ci['세부내역'] !== undefined || ci['항목'] !== undefined || ci['결제인'] !== undefined) continue;
       var owner = members[0];
       for (var up = r - 1; up >= Math.max(0, r - 6); up--) { var line = vals[up].join(' '); var hit = members.filter(function (m) { return line.indexOf(m) >= 0; })[0]; if (hit) { owner = hit; break; } }
       var cnt = 0;
