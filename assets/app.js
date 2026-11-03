@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-03a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-03b';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -190,7 +190,7 @@
               case 'recurring': { var cyr = p.cycle || cfg().currentCycle; return resolve({ ok: true, recurring: recs(), due: due(cyr).map(function (r) { return r.id; }), cycle: cyr }); }
               case 'recurringSave': { var rl = recs(); var it = Object.assign({ '유형': '지출', '활성': 'Y', '계획': 'Y' }, p.item || {}); it['금액'] = Math.round(Number(String(it['금액']).replace(/[^\d.-]/g, '')) || 0); it['일'] = Math.min(31, Math.max(1, Number(it['일']) || 1)); it['결제인'] = it['결제인'] || cfg().members[0]; if (!it['이름']) throw new Error('이름을 입력하세요'); if (!it['금액']) throw new Error('금액을 입력하세요'); if (!it['카테고리']) it['카테고리'] = it['유형'] === '수입' ? '수입' : ''; var ri = it.id ? rl.findIndex(function (r) { return r.id === it.id; }) : -1; if (ri < 0) { it.id = 'r' + Math.random().toString(36).slice(2); rl.push(it); } else rl[ri] = it; saveRecs(rl); return resolve({ ok: true, item: it, recurring: rl }); }
               case 'recurringDelete': { var rl2 = recs().filter(function (r) { return r.id !== p.id; }); saveRecs(rl2); return resolve({ ok: true, deleted: true, recurring: rl2 }); }
-              case 'applyRecurring': { var cya = p.cycle || cfg().currentCycle; var ds = due(cya); if (p.ids && p.ids.length) ds = ds.filter(function (r) { return p.ids.indexOf(r.id) >= 0; }); var added = ds.map(function (r) { var tx = normalize({ '일시': recDate(r, cya), '유형': r['유형'], '금액': r['금액'], '가맹점': r['이름'], '카테고리': r['카테고리'], '항목': r['메모'] || '', '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': '고정:' + r.id }); tx.id = Math.random().toString(36).slice(2) + Date.now().toString(36); tx['등록'] = tx['수정'] = nowIso(); all.push(tx); return tx; }); save(all); return resolve({ ok: true, added: added.length, rows: added }); }
+              case 'applyRecurring': { var cya = p.cycle || cfg().currentCycle; var ds = due(cya); if (p.ids && p.ids.length) ds = ds.filter(function (r) { return p.ids.indexOf(r.id) >= 0; }); var am = p.amounts || {}, ud = p.updateDefault || []; var added = ds.map(function (r) { var amt = Math.round(Number(String(am[r.id] == null ? '' : am[r.id]).replace(/[^\d.-]/g, '')) || 0); if (amt <= 0) amt = r['금액']; if (amt !== r['금액'] && ud.indexOf(r.id) >= 0) { var rl3 = recs(); var k3 = rl3.findIndex(function (x) { return x.id === r.id; }); if (k3 >= 0) { rl3[k3]['금액'] = amt; saveRecs(rl3); } } var tx = normalize({ '일시': recDate(r, cya), '유형': r['유형'], '금액': amt, '가맹점': r['이름'], '카테고리': r['카테고리'], '항목': r['메모'] || '', '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': '고정:' + r.id }); tx.id = Math.random().toString(36).slice(2) + Date.now().toString(36); tx['등록'] = tx['수정'] = nowIso(); all.push(tx); return tx; }); save(all); return resolve({ ok: true, added: added.length, rows: added }); }
               case 'list': { var cy = p.cycle || cfg().currentCycle; var rs = all.filter(function (o) { return cy === 'all' || o['사이클'] === cy || o['상태'] === '미확인'; }); rs.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); return resolve({ ok: true, rows: rs, cycle: cy }); }
               case 'add': { var o = normalize(p.tx); o.id = Math.random().toString(36).slice(2) + Date.now().toString(36); o['등록'] = o['수정'] = nowIso(); all.push(o); save(all); return resolve({ ok: true, row: o }); }
               case 'update': { var i = all.findIndex(function (r) { return r.id === p.id; }); if (i < 0) throw new Error('not found'); var u = normalize(p.tx, all[i]); u['수정'] = nowIso(); all[i] = u; save(all); return resolve({ ok: true, row: u }); }
@@ -436,6 +436,7 @@
         case 'cal': html += renderCal(); break;
         case 'stats': html += renderStats(); break;
         case 'recurring': html += renderRecurring(); break;
+        case 'recapply': html += renderRecApply(); break;
         case 'settle': html += renderSettle(); break;
         case 'accounts': html += renderAccounts(); break;
         case 'debts': html += renderDebts(); break;
@@ -985,6 +986,21 @@
   }
 
   // ------------------------------------------------------------ 고정 수입/지출
+  // 고정 항목 반영 확인: 항목마다 이번 달 금액을 고치고(월급·전기료처럼 달마다 다른 것), 빼고 싶은 건 체크 해제
+  function renderRecApply() {
+    var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
+    if (!dueItems.length) return '<div class="empty">이번 사이클(' + esc(state.cycle) + ')에 반영할 고정 항목이 없습니다</div><button class="btn block" data-act="goto" data-to="recurring">고정 항목 관리</button>';
+    var h = '<form id="recapplyform" class="card"><h2>' + esc(state.cycle) + ' 사이클에 반영 <span class="muted">(' + esc(cycleLabel(state.cycle)) + ')</span></h2><p class="sub" style="margin:0 0 10px">금액이 다른 달은 여기서 고치고 반영하세요. "기본값으로"를 켜면 다음 달부터 그 금액이 기본이 됩니다.</p>';
+    ['수입', '지출'].forEach(function (t) {
+      var list = dueItems.filter(function (r) { return (r['유형'] === '수입') === (t === '수입'); }); if (!list.length) return;
+      h += '<h2 style="margin-top:12px">' + t + '</h2>' + list.map(function (r) {
+        return '<div class="recapply-row"><label class="row" style="gap:8px;justify-content:flex-start"><input type="checkbox" name="use:' + esc(r.id) + '" checked><b>' + esc(r['이름']) + '</b><span class="sub">' + esc([r['카테고리'], isShared() ? r['결제인'] : '', '매월 ' + r['일'] + '일'].filter(Boolean).join(' · ')) + '</span></label>' +
+          '<div class="row" style="gap:8px;margin-top:4px"><input type="text" inputmode="numeric" name="amt:' + esc(r.id) + '" value="' + esc(Number(r['금액']).toLocaleString('ko-KR')) + '" style="flex:1;text-align:right;font-weight:700"><label class="sub" style="white-space:nowrap"><input type="checkbox" name="def:' + esc(r.id) + '"> 기본값으로</label></div></div>';
+      }).join('');
+    });
+    h += '<div class="row" style="gap:8px;margin-top:14px"><button type="button" class="btn" data-act="goto" data-to="home">취소</button><button type="submit" class="btn primary" style="flex:1">거래에 반영</button></div></form>';
+    return h;
+  }
   function renderRecurring() {
     var h = '';
     var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
@@ -1038,6 +1054,12 @@
       case 'acctxform': { var t = formVals(form, ['통장', '구분', '금액', '일시', '메모']); if (!num(t['금액'])) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } t['금액'] = num(t['금액']); p = api.call('accountTxAdd', { tx: t }).then(done('기록했습니다')); break; }
       case 'debtform': { var d = Object.assign({ id: id }, formVals(form, ['이름', '기관', '시작일', '원금', '연이율', '월상환금', '총회차', '납입회차', '소유', '메모', '활성'])); p = api.call('debtSave', { item: d }).then(function () { state.debtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
       case 'evtform': { var ev = Object.assign({ id: id }, formVals(form, ['이름', '시작일', '종료일', '메모', '상태'])); p = api.call('eventSave', { item: ev }).then(function () { state.evtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
+      case 'recapplyform': {
+        var ids = [], amounts = {}, ud = [];
+        form.querySelectorAll('input[name^="use:"]').forEach(function (cb) { var rid = cb.name.substring(4); if (!cb.checked) return; ids.push(rid); var ai = form.querySelector('[name="amt:' + rid + '"]'); if (ai) amounts[rid] = num(ai.value); var di = form.querySelector('[name="def:' + rid + '"]'); if (di && di.checked) ud.push(rid); });
+        if (!ids.length) { toast('반영할 항목을 고르세요'); if (btn) btn.disabled = false; return; }
+        p = api.call('applyRecurring', { cycle: state.cycle, ids: ids, amounts: amounts, updateDefault: ud }).then(function (j) { toast(j.added + '건을 거래에 넣었습니다'); go('home'); return refresh(); }); break;
+      }
       case 'budgetform': {
         var total = form.querySelector('[name=total]').value; var calls = [api.call('budgetSave', { cycle: state.cycle, category: '', amount: total.trim() === '' ? '' : num(total) })];
         var b = state.budget || { overrides: {}, byCategory: {} };
@@ -1116,7 +1138,7 @@
       if (file) file.addEventListener('change', function () { if (file.files[0]) runOcr(file.files[0]); });
     }
     // v3 폼들: seg/chips 는 공통 처리, submit 은 onV3Submit
-    ['settleform', 'accform', 'acctxform', 'debtform', 'evtform', 'budgetform'].forEach(function (fid) {
+    ['settleform', 'accform', 'acctxform', 'debtform', 'evtform', 'budgetform', 'recapplyform'].forEach(function (fid) {
       var f = document.getElementById(fid); if (!f) return;
       f.addEventListener('submit', onV3Submit);
       var host = fid === 'acctxform' ? f.parentElement : f;
@@ -1336,13 +1358,7 @@
         api.call('recurringDelete', { id: el.getAttribute('data-id') }).then(function () { state.recEdit = null; toast('삭제했습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
         break;
       }
-      case 'recapply': {
-        var dueNames = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; }).map(function (r) { return r['이름']; });
-        if (!dueNames.length) { toast('반영할 항목이 없습니다'); break; }
-        if (!confirm(state.cycle + ' 사이클에 ' + dueNames.length + '건을 거래로 넣습니다:\n' + dueNames.join(', '))) break;
-        api.call('applyRecurring', { cycle: state.cycle }).then(function (j) { toast(j.added + '건을 거래에 넣었습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
-        break;
-      }
+      case 'recapply': { if (!state.recurring.some(function (r) { return state.due.indexOf(r.id) >= 0; })) { toast('반영할 항목이 없습니다'); break; } go('recapply'); break; }
     }
   });
 
