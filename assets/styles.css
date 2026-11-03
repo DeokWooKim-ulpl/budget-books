@@ -234,3 +234,8 @@ details.adv > summary { cursor: pointer; list-style: none; }
 details.adv > summary::-webkit-details-marker { display: none; }
 details.adv > summary::after { content: '펼치기 ▾'; float: right; color: var(--muted); font-size: 13px; }
 details.adv[open] > summary::after { content: '접기 ▴'; }
+
+.recapply-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.recapply-row:last-child { border-bottom: 0; }
+.recapply-row input[type=text] { border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 10px; outline: none; min-width: 0; }
+.recapply-row input[type=text]:focus { border-color: var(--accent); }

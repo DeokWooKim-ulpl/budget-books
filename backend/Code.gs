@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-03a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-03b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -85,7 +85,7 @@ function handle_(req) {
         case 'ingest': return json_({ ok: true, row: ingest_(req) });
         case 'recurringSave': return json_({ ok: true, item: saveRecurring_(req.item || {}), recurring: readRecurring_() });
         case 'recurringDelete': return json_({ ok: true, deleted: deleteRecurring_(req.id), recurring: readRecurring_() });
-        case 'applyRecurring': { var ap = applyRecurring_(req.cycle || currentCycle_(), req.ids); return json_({ ok: true, added: ap.length, rows: ap }); }
+        case 'applyRecurring': { var ap = applyRecurring_(req.cycle || currentCycle_(), req.ids, req.amounts, req.updateDefault); return json_({ ok: true, added: ap.length, rows: ap }); }
         // ---- v3
         case 'settlePay': return json_(Object.assign({ ok: true }, settlePay_(req)));
         case 'settleFinish': return json_(Object.assign({ ok: true }, settleFinish_(req)));
@@ -653,12 +653,16 @@ function dueRecurring_(cycle) {
   return readRecurring_().filter(function (r) { return r['활성'] !== 'N' && !have[recurringKey_(r.id)]; });
 }
 
-function applyRecurring_(cycle, ids) {
+// amounts: {id: 이번 달 금액} — 월급·전기료처럼 달마다 다른 항목은 반영할 때 그 달 금액으로. updateDefault: [id] 면 고정 탭의 기본 금액도 그 값으로 바꾼다.
+function applyRecurring_(cycle, ids, amounts, updateDefault) {
   var due = dueRecurring_(cycle);
   if (ids && ids.length) due = due.filter(function (r) { return ids.indexOf(r.id) >= 0; });
+  amounts = amounts || {}; updateDefault = updateDefault || [];
   return due.map(function (r) {
+    var amt = amount_(amounts[r.id]); if (amt <= 0) amt = r['금액'];
+    if (amt !== r['금액'] && updateDefault.indexOf(r.id) >= 0) saveRecurring_(Object.assign({}, r, { '금액': amt }));
     return addTx_({
-      '일시': recurringDate_(r, cycle), '유형': r['유형'], '금액': r['금액'], '가맹점': r['이름'], '카테고리': r['카테고리'],
+      '일시': recurringDate_(r, cycle), '유형': r['유형'], '금액': amt, '가맹점': r['이름'], '카테고리': r['카테고리'],
       '항목': r['메모'], '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': recurringKey_(r.id)
     });
   });
