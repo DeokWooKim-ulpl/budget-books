@@ -225,3 +225,12 @@ details.items summary .muted { font-weight: 400; font-size: 13px; }
 @media (min-width: 1400px) {
   #app { max-width: 1320px; }
 }
+
+/* 빠른 입력 칩, 고급 설정 접기 */
+.chips.quick .chip { padding: 7px 12px; font-size: 14px; }
+.chips.quick .chip .muted { font-size: 12px; margin-left: 2px; }
+.chips.quick.inform { margin-bottom: 8px; }
+details.adv > summary { cursor: pointer; list-style: none; }
+details.adv > summary::-webkit-details-marker { display: none; }
+details.adv > summary::after { content: '펼치기 ▾'; float: right; color: var(--muted); font-size: 13px; }
+details.adv[open] > summary::after { content: '접기 ▴'; }

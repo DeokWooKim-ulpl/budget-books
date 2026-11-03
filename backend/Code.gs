@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-02g';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-03a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -378,17 +378,22 @@ function listTx_(cycle, includeUnconfirmed) {
   return rows;
 }
 
+// 자주 쓰는 가맹점. 최근 90일 횟수에 무게를 두고(score), 마지막 금액·카테고리를 같이 준다 → 앱의 빠른 입력 칩
 function recentMerchants_() {
-  var rows = allTx_();
+  var rows = allTx_().filter(function (o) { return o['가맹점'] && o['상태'] !== '취소' && o['출처'] !== '고정'; });
   rows.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; });
-  var seen = {}, out = [];
-  for (var i = 0; i < rows.length && out.length < 60; i++) {
-    var m = rows[i]['가맹점'];
-    if (!m || seen[m]) continue;
-    seen[m] = true;
-    out.push({ name: m, category: rows[i]['카테고리'] });
-  }
-  return out;
+  var cut90 = isoLocal_(new Date(Date.now() - 90 * 86400000)), cut365 = isoLocal_(new Date(Date.now() - 365 * 86400000));
+  var stat = {}, order = [];
+  rows.forEach(function (o) {
+    var m = o['가맹점']; var st = stat[m];
+    if (!st) { st = stat[m] = { name: m, category: o['카테고리'], lastAmount: o['금액'], lastDate: o['일시'], type: o['유형'], count: 0, recent: 0, cats: {} }; order.push(m); }
+    st.count++; if (o['일시'] >= cut90) st.recent++; if (o['일시'] >= cut365) st.cats[o['카테고리'] || ''] = (st.cats[o['카테고리'] || ''] || 0) + 1;
+  });
+  return order.map(function (m) {
+    var st = stat[m]; var best = st.category;
+    Object.keys(st.cats).forEach(function (c) { if (c && (!best || st.cats[c] > (st.cats[best] || 0))) best = c; });
+    return { name: st.name, category: best, lastAmount: st.lastAmount, lastDate: st.lastDate, type: st.type, count: st.count, recent: st.recent, score: st.recent * 3 + Math.min(st.count, 30) * 0.3 + (order.indexOf(m) < 10 ? 2 : 0) };
+  }).sort(function (a, b) { return b.score - a.score; }).slice(0, 60);
 }
 
 // ---------------------------------------------------------------- 정산 (공동)

@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-02g';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-03a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -186,7 +186,7 @@
             var r3 = v3(action, p, all); if (r3) return resolve(r3);
             switch (action) {
               case 'config': return resolve({ ok: true, config: cfg() });
-              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var seen0 = {}, m0 = []; all.slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }).forEach(function (r) { if (r['가맹점'] && !seen0[r['가맹점']]) { seen0[r['가맹점']] = 1; m0.push({ name: r['가맹점'], category: r['카테고리'] }); } }); var b0 = { ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0.slice(0, 60), recurring: recs(), recurringDue: due(cy0).map(function (r) { return r.id; }), accounts: accountsRead().accounts, debts: debtsRead(), events: eventsRead(), itemCounts: itemCounts() }; if (c0.ledgerType === 'shared') { var st0 = settlementsRead(); b0.balance = st0.balance; b0.settlements = st0.log.slice(0, 20); } else { b0.budget = budgetFor(cy0); b0.budgetSuggest = budgetSuggest(cy0); } return resolve(b0); }
+              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var m0 = merchantStats(all); var b0 = { ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0, recurring: recs(), recurringDue: due(cy0).map(function (r) { return r.id; }), accounts: accountsRead().accounts, debts: debtsRead(), events: eventsRead(), itemCounts: itemCounts() }; if (c0.ledgerType === 'shared') { var st0 = settlementsRead(); b0.balance = st0.balance; b0.settlements = st0.log.slice(0, 20); } else { b0.budget = budgetFor(cy0); b0.budgetSuggest = budgetSuggest(cy0); } return resolve(b0); }
               case 'recurring': { var cyr = p.cycle || cfg().currentCycle; return resolve({ ok: true, recurring: recs(), due: due(cyr).map(function (r) { return r.id; }), cycle: cyr }); }
               case 'recurringSave': { var rl = recs(); var it = Object.assign({ '유형': '지출', '활성': 'Y', '계획': 'Y' }, p.item || {}); it['금액'] = Math.round(Number(String(it['금액']).replace(/[^\d.-]/g, '')) || 0); it['일'] = Math.min(31, Math.max(1, Number(it['일']) || 1)); it['결제인'] = it['결제인'] || cfg().members[0]; if (!it['이름']) throw new Error('이름을 입력하세요'); if (!it['금액']) throw new Error('금액을 입력하세요'); if (!it['카테고리']) it['카테고리'] = it['유형'] === '수입' ? '수입' : ''; var ri = it.id ? rl.findIndex(function (r) { return r.id === it.id; }) : -1; if (ri < 0) { it.id = 'r' + Math.random().toString(36).slice(2); rl.push(it); } else rl[ri] = it; saveRecs(rl); return resolve({ ok: true, item: it, recurring: rl }); }
               case 'recurringDelete': { var rl2 = recs().filter(function (r) { return r.id !== p.id; }); saveRecs(rl2); return resolve({ ok: true, deleted: true, recurring: rl2 }); }
@@ -199,7 +199,7 @@
               case 'settle': { var n = 0; all.forEach(function (r) { if (r['유형'] === '지출' && r['정산'] === 'X') { r['정산'] = 'O'; n++; } }); save(all); return resolve({ ok: true, settled: n }); }
               case 'summary': return resolve({ ok: true, summary: summary(p.cycle || cfg().currentCycle) });
               case 'dict': return resolve({ ok: true, dict: dict() });
-              case 'merchants': { var seen = {}, m = []; all.slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }).forEach(function (r) { if (r['가맹점'] && !seen[r['가맹점']]) { seen[r['가맹점']] = 1; m.push({ name: r['가맹점'], category: r['카테고리'] }); } }); return resolve({ ok: true, merchants: m.slice(0, 60) }); }
+              case 'merchants': return resolve({ ok: true, merchants: merchantStats(all) });
               case 'ingest': { var parsed = p.source === '스크린샷' ? LedgerParser.parseScreenshot(p.text) : LedgerParser.parseNotification(p.text); if (!parsed.amount) throw new Error('amount not found'); var g = LedgerParser.guessCategory(parsed.merchant, dict(), RULES); var tx = normalize({ '일시': parsed.date, '유형': parsed.type, '금액': parsed.amount, '가맹점': parsed.merchant, '카테고리': g ? g.category : '', '결제인': p.payer || p.device, '출처': p.source || '알림', '상태': '미확인', '원문': p.text }); tx.id = Math.random().toString(36).slice(2); tx['등록'] = tx['수정'] = nowIso(); all.push(tx); save(all); return resolve({ ok: true, row: tx }); }
               default: throw new Error('unknown action ' + action);
             }
@@ -217,6 +217,13 @@
   function cycleLabel(c) { if (!c) return ''; var r = LedgerParser.cycleRange(c, state.config ? state.config.cycleStartDay : 25); var e = new Date(r.end.getTime() - 86400000); return (r.start.getMonth() + 1) + '/' + r.start.getDate() + ' ~ ' + (e.getMonth() + 1) + '/' + e.getDate(); }
   function shiftCycle(c, d) { var p = c.split('-'); var dt = new Date(+p[0], +p[1] - 1 + d, 1); return dt.getFullYear() + '-' + p2(dt.getMonth() + 1); }
   function dayKey(iso) { return String(iso).substring(0, 10); }
+  // 자주 쓰는 가맹점 (서버 recentMerchants_ 와 같은 규칙). 체험 모드에서 쓴다.
+  function merchantStats(all) {
+    var rows = all.filter(function (o) { return o['가맹점'] && o['상태'] !== '취소' && o['출처'] !== '고정'; }).slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; });
+    var cut90 = new Date(Date.now() - 90 * 86400000).toISOString().substring(0, 10); var stat = {}, order = [];
+    rows.forEach(function (o) { var st = stat[o['가맹점']]; if (!st) { st = stat[o['가맹점']] = { name: o['가맹점'], category: o['카테고리'], lastAmount: o['금액'], lastDate: o['일시'], type: o['유형'], count: 0, recent: 0, cats: {} }; order.push(o['가맹점']); } st.count++; if (o['일시'] >= cut90) st.recent++; st.cats[o['카테고리'] || ''] = (st.cats[o['카테고리'] || ''] || 0) + 1; });
+    return order.map(function (m) { var st = stat[m]; var best = st.category; Object.keys(st.cats).forEach(function (c) { if (c && (!best || st.cats[c] > (st.cats[best] || 0))) best = c; }); return { name: st.name, category: best, lastAmount: st.lastAmount, lastDate: st.lastDate, type: st.type, count: st.count, recent: st.recent, score: st.recent * 3 + Math.min(st.count, 30) * 0.3 + (order.indexOf(m) < 10 ? 2 : 0) }; }).sort(function (a, b) { return b.score - a.score; }).slice(0, 60);
+  }
   function dayLabel(k) { var d = new Date(k + 'T00:00:00'); var w = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()]; return (d.getMonth() + 1) + '월 ' + d.getDate() + '일 (' + w + ')'; }
   function isShared() { return state.config && state.config.ledgerType === 'shared'; }
   function me() { return settings.me || (state.config && state.config.members[0]) || ''; }
@@ -474,6 +481,7 @@
       var dueSum = dueItems.reduce(function (a, r) { return a + (r['유형'] === '수입' ? 0 : r['금액']); }, 0);
       h += '<div class="card"><h2>이번 사이클에 아직 반영 안 된 고정 항목 ' + dueItems.length + '건</h2><div class="sub" style="margin-bottom:10px">' + esc(dueItems.map(function (r) { return r['이름'] + ' ' + won(r['금액']); }).join(' · ')) + (dueSum ? ' (지출 ' + won(dueSum) + ')' : '') + '</div><div class="row" style="gap:8px"><button class="btn primary" style="flex:1" data-act="recapply">거래에 반영</button><button class="btn" data-act="goto" data-to="recurring">목록 보기</button></div></div>';
     }
+    h += renderQuickCard();
     h += '<div class="card"><h2>이번 사이클 지출</h2><div class="big">' + won(s.expense) + '</div>';
     if (isShared()) {
       h += '<div class="sub" style="margin-top:6px">' + Object.keys(s.byPayer).map(function (p) { return esc(p) + ' ' + won(s.byPayer[p]); }).join(' · ') + '</div>';
@@ -502,6 +510,17 @@
     return h;
   }
 
+  // 빠른 입력 칩: 자주 쓰는 가맹점을 누르면 가맹점·카테고리·마지막 금액이 채워진 입력 폼이 열린다
+  function quickList() { return (state.merchants || []).filter(function (m) { return m.name && m.type !== '수입'; }); }
+  function quickChips(n, cls) {
+    var ms = quickList().slice(0, n);
+    if (!ms.length) return '';
+    return '<div class="chips quick' + (cls ? ' ' + cls : '') + '">' + ms.map(function (m, i) { return '<button type="button" class="chip" data-act="quick" data-i="' + i + '" title="' + esc(m.category || '') + '">' + esc(m.name) + (m.lastAmount ? ' <span class="muted">' + Number(m.lastAmount).toLocaleString('ko-KR') + '</span>' : '') + '</button>'; }).join('') + '</div>';
+  }
+  function renderQuickCard() {
+    var chips = quickChips(8); if (!chips) return '';
+    return '<div class="card"><h2>빠른 입력 <span class="muted">자주 쓰는 곳 · 누르면 금액만 확인하고 저장</span></h2>' + chips + '</div>';
+  }
   function txRow(r) {
     var cls = 'tx' + (r['상태'] === '미확인' ? ' unconfirmed' : '') + (r['상태'] === '취소' ? ' cancelled' : '');
     var meta = [r['항목'], isShared() ? r['결제인'] + (r['정산'] === 'X' ? ' · 미정산' : '') + (r['분담'] ? ' · ' + shareLabel(r['분담']) : '') : (r['계획'] === 'Y' ? '계획' : ''), r['태그'] ? '#' + r['태그'] : '', state.itemCounts[r.id] ? '품목 ' + state.itemCounts[r.id] : '', r['출처'] !== '수동' && r['출처'] !== '이관' ? r['출처'] : ''].filter(Boolean).join(' · ');
@@ -804,7 +823,7 @@
     else h += '<div class="seg" data-name="계획"><button type="button" class="' + (v['계획'] === 'Y' ? 'on' : '') + '" data-v="Y">계획</button><button type="button" class="' + (v['계획'] !== 'Y' ? 'on' : '') + '" data-v="N">비계획</button></div>';
     h += '</div>';
     h += '<div class="field"><label>금액</label><input class="amount-input" name="금액" type="text" inputmode="numeric" placeholder="0" value="' + esc(v['금액'] ? Number(v['금액']).toLocaleString('ko-KR') : '') + '" autocomplete="off"></div>';
-    h += '<div class="field"><label>가맹점</label><input name="가맹점" type="text" list="merchants" value="' + esc(v['가맹점']) + '" placeholder="예: 농수축산물마트" autocomplete="off"><datalist id="merchants">' + state.merchants.map(function (m) { return '<option value="' + esc(m.name) + '">'; }).join('') + '</datalist></div>';
+    h += '<div class="field"><label>가맹점</label>' + (!edit && !v['가맹점'] ? quickChips(6, 'inform') : '') + '<input name="가맹점" type="text" list="merchants" value="' + esc(v['가맹점']) + '" placeholder="예: 농수축산물마트" autocomplete="off"><datalist id="merchants">' + state.merchants.map(function (m) { return '<option value="' + esc(m.name) + '">'; }).join('') + '</datalist></div>';
     h += '<div class="field"><label>카테고리 <span id="cat-hint" class="muted"></span></label><div class="chips" data-name="카테고리">' + cats.map(function (c) { return '<button type="button" class="chip ' + (v['카테고리'] === c ? 'on' : '') + '" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '<button type="button" class="chip" data-act="newcat">＋ 새 카테고리</button></div><input type="hidden" name="카테고리" value="' + esc(v['카테고리']) + '"></div>';
     h += '<div class="field"><label>항목 / 메모</label><input name="항목" type="text" value="' + esc(v['항목']) + '" placeholder="예: 고기, 자동차세"></div>';
     h += '<div class="field"><label>날짜</label><input name="일시" type="date" value="' + esc(String(v['일시']).substring(0, 10)) + '"></div>';
@@ -814,7 +833,7 @@
     if (hasV3()) h += renderItemsEditor(v);
     if (isShared() && edit) h += '<div class="field"><label>정산</label><div class="seg" data-name="정산"><button type="button" class="' + (v['정산'] === 'X' ? 'on' : '') + '" data-v="X">미정산</button><button type="button" class="' + (v['정산'] === 'O' ? 'on' : '') + '" data-v="O">정산됨</button></div></div>';
     h += '<input type="hidden" name="유형" value="' + esc(v['유형']) + '"><input type="hidden" name="결제인" value="' + esc(v['결제인']) + '"><input type="hidden" name="계획" value="' + esc(v['계획']) + '"><input type="hidden" name="정산" value="' + esc(v['정산']) + '"><input type="hidden" name="출처" value="' + esc(v['출처']) + '"><input type="hidden" name="원문" value="' + esc(v['원문']) + '"><input type="hidden" name="분담" value="' + esc(v['분담'] || '') + '"><input type="hidden" name="태그" value="' + esc(v['태그'] || '') + '">';
-    h += '<div class="row" style="margin-top:16px;gap:8px">' + (edit ? '<button type="button" class="btn danger" data-act="delete" data-id="' + esc(row.id) + '">삭제</button>' : '<button type="button" class="btn" data-act="goto" data-to="home">취소</button>') + '<button type="submit" class="btn primary" style="flex:1">' + (edit ? '수정 저장' : '저장') + '</button></div>';
+    h += '<div class="row" style="margin-top:16px;gap:8px">' + (edit ? '<button type="button" class="btn danger" data-act="delete" data-id="' + esc(row.id) + '">삭제</button><button type="button" class="btn" data-act="copytx" data-id="' + esc(row.id) + '" title="같은 내용으로 오늘 날짜 새 거래">복사</button>' : '<button type="button" class="btn" data-act="goto" data-to="home">취소</button>') + '<button type="submit" class="btn primary" style="flex:1">' + (edit ? '수정 저장' : '저장') + '</button></div>';
     h += '</form>';
     if (!edit) h += '<div class="card"><h2>스크린샷으로 입력</h2><p class="sub" style="margin:0 0 10px">토스 결제 화면을 캡처해서 이 앱으로 <b>공유</b>하면 자동으로 이 폼이 채워집니다. PC나 수동으로는 아래에서 이미지를 고르세요.</p><input type="file" id="ocrfile" accept="image/*" class="hidden"><button type="button" class="btn block" data-act="pickimage">이미지 선택해서 읽기</button>' + (state.ocr ? '<div class="sub" style="margin-top:8px">' + esc(state.ocr.status) + '</div><div class="progress"><i style="width:' + Math.round((state.ocr.progress || 0) * 100) + '%"></i></div>' : '') + '</div>';
     return h;
@@ -841,22 +860,23 @@
     var th = settings.theme || 'light';
     var h = '<div class="card"><h2>화면</h2><div class="row"><span>밝기</span><div class="seg" id="theme-seg">' + [['light', '밝게'], ['dark', '어둡게'], ['auto', '자동']].map(function (o) { return '<button type="button" class="' + (th === o[0] ? 'on' : '') + '" data-act="theme" data-v="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></div><div class="sub" style="margin-top:6px">자동은 휴대폰의 다크 모드 설정을 따릅니다.</div></div>';
     if (hasV3()) h += '<div class="card"><h2>관리</h2><div class="linklist">' + (isShared() ? '<a href="#settle">정산 기록 <span class="muted">누가 누구에게, 일부 정산</span></a>' : '<a href="#budget">예산 <span class="muted">이번 사이클 총액·카테고리별</span></a>') + '<a href="#accounts">통장 <span class="muted">공금·비상금 잔액과 입출금</span></a><a href="#debts">대출 <span class="muted">남은 원금·납입 진행</span></a><a href="#events">이벤트 <span class="muted">여행처럼 묶어서 보기</span></a><a href="#categories">카테고리 정리 <span class="muted">이름 바꾸기·합치기</span></a><a href="#recurring">고정 항목 <span class="muted">월세·월급</span></a></div></div>';
-    h += '<div class="card"><h2>연결</h2>';
+    h += '<details class="card adv"><summary><h2 style="display:inline">고급 설정 <span class="muted">연결 주소·PIN·설치 링크·자동 수집</span></h2></summary>';
+    h += '<div style="margin-top:12px"><h2>연결</h2>';
     h += '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" value="' + esc(settings.endpoint || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>';
     h += '<div class="field"><label>PIN</label><input id="s-pin" type="password" value="' + esc(settings.pin || '') + '"></div>';
     h += '<div class="field"><label>내 이름 (자동 수집·입력 시 결제인)</label><input id="s-me" type="text" value="' + esc(settings.me || '') + '" list="members"><datalist id="members">' + (c ? c.members.map(function (m) { return '<option value="' + esc(m) + '">'; }).join('') : '') + '</datalist></div>';
     h += '<div class="row"><label class="sub"><input type="checkbox" id="s-local" ' + (settings.local ? 'checked' : '') + '> 체험 모드 (서버 없이 이 기기에만 저장)</label></div>';
     h += '<button class="btn primary block" style="margin-top:12px" data-act="savesettings">저장하고 다시 연결</button></div>';
-    h += '<div class="card"><h2>재설치·기기 교체 대비</h2><p class="sub" style="margin:0 0 10px">거래 기록은 휴대폰이 아니라 구글 시트(드라이브)에만 저장되므로 앱을 지워도 남습니다. 이 기기 설정(서버 주소·PIN·이름)은 아래 <b>설치 링크</b> 하나로 복원됩니다. 링크를 비밀번호 관리자나 나에게 보내는 메시지에 보관해 두세요. PIN 이 들어 있으니 공개하지 마세요.</p>' +
+    h += '<div style="margin-top:18px"><h2>재설치·기기 교체 대비</h2><p class="sub" style="margin:0 0 10px">거래 기록은 휴대폰이 아니라 구글 시트(드라이브)에만 저장되므로 앱을 지워도 남습니다. 이 기기 설정(서버 주소·PIN·이름)은 아래 <b>설치 링크</b> 하나로 복원됩니다. 링크를 비밀번호 관리자나 나에게 보내는 메시지에 보관해 두세요. PIN 이 들어 있으니 공개하지 마세요.</p>' +
       (settings.endpoint ? '<div class="field"><label>이름 (링크를 만들 사람)</label><input id="s-linkname" type="text" value="' + esc(settings.me || '') + '" list="members"></div><button class="btn block" data-act="copylink">설치 링크 복사</button><div id="linkout" class="sub" style="margin-top:8px;word-break:break-all"></div>' : '<div class="sub">서버 주소를 먼저 연결하면 링크를 만들 수 있습니다.</div>') + '</div>';
     if (settings.local) {
       var n = 0; try { n = JSON.parse(localStorage.getItem(NS + 'local.rows') || '[]').length; } catch (e) { }
       if (n) h += '<div class="notice">체험 모드의 거래 ' + n + '건은 이 기기에만 있습니다. 위에서 서버 주소를 넣고 체험 모드를 끄면 시트로 올릴지 묻습니다.</div>';
     }
+    h += '<div style="margin-top:18px"><h2>자동 수집 (선택)</h2><p class="sub">안드로이드 MacroDroid 에서 "알림 수신(토스)" 트리거 → "HTTP 요청(POST)" 액션으로 아래 JSON 을 웹앱 URL 로 보내면 결제 알림이 자동으로 들어옵니다. 절차는 README.</p><pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:10px;border-radius:10px">' + esc(JSON.stringify({ action: 'ingest', pin: '(PIN)', device: me() || '(이름)', source: '알림', text: '[notification_title] [notification_text]' }, null, 1)) + '</pre></div>';
+    h += '</details>';
     h += '<div class="card"><h2>장부</h2><div class="sub">유형: ' + (c ? (c.ledgerType === 'shared' ? '공동 (' + c.members.join(', ') + ')' : '개인') : '-') + ' · 사이클 시작일: ' + (c ? c.cycleStartDay : '-') + '일</div>' + (c && c.sheetUrl ? '<p><a href="' + esc(c.sheetUrl) + '" target="_blank" rel="noopener">구글 시트에서 열기 (PC 수정)</a></p>' : '') + '<p class="sub">카테고리, 예산, 멤버는 시트의 <code>설정</code> 탭에서 바꿉니다.</p></div>';
     h += '<div class="card"><h2>고정 수입 / 지출</h2><p class="sub" style="margin:0 0 10px">월세, 월급, 보험료처럼 매달 반복되는 항목을 등록해 두면 사이클마다 한 번에 거래로 넣을 수 있습니다.</p><button class="btn block" data-act="goto" data-to="recurring">고정 항목 관리 (' + state.recurring.length + '건)</button></div>';
-    h += '<div class="card"><h2>알림 문구 테스트</h2><p class="sub" style="margin:0 0 8px">MacroDroid 가 보내는 알림 문구가 어떻게 읽히는지 확인합니다.</p><div class="field"><textarea id="ntest" rows="2" placeholder="[토스] 스타벅스 4,500원 결제 완료"></textarea></div><button class="btn block" data-act="ntest">파싱해 보기</button><div id="ntest-out" class="sub" style="margin-top:8px"></div></div>';
-    h += '<div class="card"><h2>자동 수집 설정 요약</h2><p class="sub">안드로이드 MacroDroid 에서 "알림 수신(토스)" 트리거 → "HTTP 요청(POST)" 액션으로 아래 JSON 을 웹앱 URL 로 보냅니다. 자세한 절차는 README 참고.</p><pre style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:10px;border-radius:10px">' + esc(JSON.stringify({ action: 'ingest', pin: '(PIN)', device: me() || '(이름)', source: '알림', text: '[notification_title] [notification_text]' }, null, 1)) + '</pre></div>';
     h += '<div class="sub" style="text-align:center;margin:16px 0 4px">앱 버전 ' + APP_VERSION + ' · <a href="#" data-act="reload">새로고침</a></div>';
     return h;
   }
@@ -1069,7 +1089,7 @@
       form.addEventListener('submit', onSubmit);
       var amt = form.querySelector('[name=금액]');
       amt.addEventListener('input', function () { var n = amt.value.replace(/[^\d]/g, ''); amt.value = n ? Number(n).toLocaleString('ko-KR') : ''; });
-      if (!amt.value) setTimeout(function () { amt.focus(); }, 50);
+      if (!form.getAttribute('data-id')) setTimeout(function () { amt.focus(); if (amt.value) amt.select(); }, 50);   // 새 입력: 금액으로 포커스 (채워져 있으면 바로 고칠 수 있게 선택)
       var mer = form.querySelector('[name=가맹점]');
       mer.addEventListener('input', function () { autoCategory(form, mer.value); });
       mer.addEventListener('change', function () { autoCategory(form, mer.value); });
@@ -1163,7 +1183,7 @@
     if (id) { idx = state.rows.map(function (r) { return r.id; }).indexOf(id); prev = idx >= 0 ? state.rows[idx] : null; if (prev) { bumpSummary(prev, -1); state.rows[idx] = local; bumpSummary(local, 1); sortRows(); } }
     else { local.id = 'tmp-' + Date.now(); if (local['사이클'] === state.cycle) { state.rows.push(local); sortRows(); bumpSummary(local, 1); } }
     delete state.extra[local['사이클']];
-    toast(id ? '수정했습니다' : '저장했습니다');
+    if (id) toast('수정했습니다'); else toast('저장했습니다', '하나 더', function () { go('add'); }, 5000);
     go(state.returnTo || 'list'); state.returnTo = null;
     var p = id ? api.call('update', { id: id, tx: tx }) : api.call('add', { tx: tx });
     p.then(function (j) {
@@ -1195,6 +1215,14 @@
     if (itemsBox) { itemsBox.addEventListener('input', function (e) { var el = e.target; if (el.getAttribute('data-k') === '금액') { var n = el.value.replace(/[^\d]/g, ''); el.value = n ? Number(n).toLocaleString('ko-KR') : ''; } }); var last = itemsBox.querySelector('.itemrow:last-child input'); if (last && !last.value) last.focus(); }
   }
 
+  // PC 단축키: n 새 거래, / 목록 검색, Esc 폼 닫기 (글자 입력 중이 아닐 때만)
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName || '').toLowerCase(); var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey;
+    if (e.key === 'Escape' && (state.view === 'add' || state.view === 'edit')) { go(state.returnTo || 'list'); return; }
+    if (typing || !state.config) return;
+    if (e.key === 'n' || e.key === 'N') { e.preventDefault(); go('add'); }
+    else if (e.key === '/') { e.preventDefault(); if (state.view !== 'list') go('list'); setTimeout(function () { var q = document.getElementById('listq'); if (q) q.focus(); }, 50); }
+  });
   var pendingDelete = null;
   document.addEventListener('click', function (e) {
     var el = e.target.closest('[data-act]'); if (!el) return;
@@ -1250,6 +1278,11 @@
       case 'itemadd': { state.formItems = (document.getElementById('items') ? readItemsFromDom() : (state.formItems || [])).concat([{ '품목': '', '수량': 1, '금액': 0 }]); rerenderItems(); break; }
       case 'itemdel': { var li = readItemsFromDom(); li.splice(Number(el.getAttribute('data-i')), 1); state.formItems = li; rerenderItems(); break; }
       case 'itemsum': { var ai = document.querySelector('#txform [name=금액]'); if (ai) ai.value = Number(el.getAttribute('data-v')).toLocaleString('ko-KR'); break; }
+      case 'quick': { var qm = quickList()[Number(el.getAttribute('data-i'))]; if (!qm) break;
+        var inForm = document.getElementById('txform');
+        if (inForm) { inForm.querySelector('[name=가맹점]').value = qm.name; autoCategory(inForm, qm.name); if (qm.category) { inForm.querySelector('input[name=카테고리]').value = qm.category; inForm.querySelectorAll('.chips[data-name=카테고리] .chip').forEach(function (x) { x.classList.toggle('on', x.getAttribute('data-v') === qm.category); }); } var qa = inForm.querySelector('[name=금액]'); if (qa && !qa.value.replace(/[^\d]/g, '') && qm.lastAmount) qa.value = Number(qm.lastAmount).toLocaleString('ko-KR'); var qc = inForm.querySelector('.chips.quick'); if (qc) qc.remove(); if (qa) { qa.focus(); qa.select(); } break; }
+        state.prefill = { tx: { '가맹점': qm.name, '카테고리': qm.category || '', '금액': qm.lastAmount || '', '결제인': me() }, note: '' }; go('add'); break; }
+      case 'copytx': { var ct = state.rows.filter(function (r) { return r.id === el.getAttribute('data-id'); })[0]; if (!ct) break; state.prefill = { tx: { '가맹점': ct['가맹점'], '카테고리': ct['카테고리'], '금액': ct['금액'], '항목': ct['항목'], '결제인': ct['결제인'], '유형': ct['유형'], '분담': ct['분담'] || '', '태그': ct['태그'] || '', '일시': nowIso() }, note: '' }; go('add'); break; }
       case 'addon': state.prefill = { tx: { '일시': el.getAttribute('data-date') + 'T12:00:00' } }; state.returnTo = 'cal'; go('add'); break;
       case 'edit': go('edit/' + el.getAttribute('data-id')); break;
       case 'settle':
@@ -1308,12 +1341,6 @@
         if (!dueNames.length) { toast('반영할 항목이 없습니다'); break; }
         if (!confirm(state.cycle + ' 사이클에 ' + dueNames.length + '건을 거래로 넣습니다:\n' + dueNames.join(', '))) break;
         api.call('applyRecurring', { cycle: state.cycle }).then(function (j) { toast(j.added + '건을 거래에 넣었습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); });
-        break;
-      }
-      case 'ntest': {
-        var txt = document.getElementById('ntest').value; var r = LedgerParser.parseNotification(txt);
-        var g = LedgerParser.guessCategory(r.merchant, state.dict, []);
-        document.getElementById('ntest-out').textContent = JSON.stringify({ 금액: r.amount, 가맹점: r.merchant, 일시: r.date, 카테고리: g ? g.category : '(사전에 없음 → 미확인으로 등록)', 신뢰도: r.confidence, 취소: r.cancelled });
         break;
       }
     }
