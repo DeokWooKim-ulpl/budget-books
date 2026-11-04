@@ -241,3 +241,17 @@ details.adv[open] > summary::after { content: '접기 ▴'; }
 .recapply-row input[type=text]:focus { border-color: var(--accent); }
 
 .chips.multi .chip:not(.on) { opacity: .45; text-decoration: line-through; }
+
+/* 입출금 기록 표 (연도별) */
+.yearhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 4px; border-top: 1px solid var(--line); cursor: pointer; flex-wrap: wrap; }
+.yearhead:first-of-type { border-top: 0; }
+.yearhead .sub { font-size: 13px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; margin: 4px 0 10px; font-variant-numeric: tabular-nums; }
+.tbl th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl td { padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl .r { text-align: right; white-space: nowrap; }
+.tbl .nowrap { white-space: nowrap; }
+.tbl .memo { color: var(--muted); font-size: 13px; word-break: break-all; }
+.tbl .btn.small { padding: 3px 7px; font-size: 12px; }
+@media (max-width: 480px) { .tbl th:nth-child(4), .tbl td:nth-child(4) { display: none; } }   /* 좁은 폰에서는 잔액 열 숨김 */
