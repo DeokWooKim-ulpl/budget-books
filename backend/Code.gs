@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-04d';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-04e';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정', '분담'];   // 분담(v3.1, 공동): 반영될 거래의 분담 (빈칸=같이, 이름=그 사람 전액)
@@ -63,7 +63,7 @@ function doPost(e) {
 var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
-  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1,
+  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1, accountTxUpdate: 1,
   groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1 };
 
 function handle_(req) {
@@ -92,7 +92,8 @@ function handle_(req) {
         case 'settleFinish': return json_(Object.assign({ ok: true }, settleFinish_(req)));
         case 'settleDelete': return json_({ ok: true, deleted: settleDelete_(req.id), balance: balance_() });
         case 'accountSave': return json_({ ok: true, item: accountSave_(req.item || {}), accounts: accountsRead_() });
-        case 'accountDelete': return json_({ ok: true, deleted: accountDelete_(req.id), accounts: accountsRead_() });
+        case 'accountDelete': return json_({ ok: true, deleted: accountDelete_(req.id, !!req.cascade), accounts: accountsRead_() });
+        case 'accountTxUpdate': return json_({ ok: true, item: accountTxUpdate_(req.id, req.tx || {}), accounts: accountsRead_() });
         case 'accountTxAdd': return json_({ ok: true, item: accountTxAdd_(req.tx || {}), accounts: accountsRead_() });
         case 'accountTxDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_ACCTX, req.id), accounts: accountsRead_() });
         case 'accountTransfer': return json_({ ok: true, item: accountTransfer_(req), accounts: accountsRead_() });
@@ -143,6 +144,7 @@ function read_(req) {
     // ---- v3
     case 'settlements': return Object.assign({ ok: true }, settlementsRead_());
     case 'accounts': return Object.assign({ ok: true }, accountsRead_());
+    case 'accountLog': return Object.assign({ ok: true, id: req.id }, accountLog_(req.id));
     case 'debts': return { ok: true, debts: debtsRead_() };
     case 'events': return { ok: true, events: eventsRead_() };
     case 'groups': return { ok: true, groups: groupsRead_() };
@@ -1292,10 +1294,42 @@ function accountSave_(item) {
   o['목표일'] = day_(o['목표일']);
   return tabUpsert_(SHEET_ACC, ACOLS, o, 'a');
 }
-function accountDelete_(id) {
-  var used = tabRead_(SHEET_ACCTX, ATCOLS).some(function (t) { return t['통장'] === id; });
-  if (used) throw new Error('기록이 있는 통장은 지울 수 없습니다. 대신 끄세요');
+// cascade 가 true 면 입출금 기록도 같이 지운다 (주머니를 정리할 때). 아니면 기록이 있으면 막는다.
+function accountDelete_(id, cascade) {
+  var txs = tabRead_(SHEET_ACCTX, ATCOLS).filter(function (t) { return t['통장'] === id; });
+  if (txs.length && !cascade) throw new Error('기록이 ' + txs.length + '건 있는 통장입니다. 기록까지 지우려면 확인하세요');
+  if (txs.length) {
+    var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_ACCTX); var last = sh.getLastRow();
+    var vals = sh.getRange(2, 1, last - 1, ATCOLS.length).getValues();
+    var keep = vals.filter(function (row) { return String(row[ATCOLS.indexOf('통장')]) !== String(id); });
+    sh.getRange(2, 1, last - 1, ATCOLS.length).clearContent();
+    if (keep.length) sh.getRange(2, 1, keep.length, ATCOLS.length).setValues(keep);
+    CACHE_['tab:' + SHEET_ACCTX] = null;
+  }
   return tabDelete_(SHEET_ACC, id);
+}
+// 입출금 기록 한 줄 수정 (날짜·구분·금액·메모)
+function accountTxUpdate_(id, tx) {
+  var cur = tabRead_(SHEET_ACCTX, ATCOLS).filter(function (t) { return t.id === id; })[0];
+  if (!cur) throw new Error('기록을 찾지 못했습니다');
+  var o = Object.assign({}, cur);
+  if (tx['금액'] !== undefined) { var a = amount_(tx['금액']); if (a <= 0) throw new Error('금액을 입력하세요'); o['금액'] = a; }
+  if (tx['구분'] !== undefined) o['구분'] = tx['구분'] === '출금' ? '출금' : '입금';
+  if (tx['일시'] !== undefined && tx['일시']) o['일시'] = String(tx['일시']).length === 10 ? tx['일시'] + 'T12:00:00' : String(tx['일시']).substring(0, 19);
+  if (tx['메모'] !== undefined) o['메모'] = String(tx['메모'] || '').trim();
+  if (tx['통장'] !== undefined && tx['통장']) o['통장'] = String(tx['통장']);
+  tabWrite_(SHEET_ACCTX, ATCOLS, o, tabRowIndex_(SHEET_ACCTX, id));
+  return o;
+}
+// 통장 하나의 전체 기록 (최신순) + 연도별 합계
+function accountLog_(id) {
+  var txs = tabRead_(SHEET_ACCTX, ATCOLS).filter(function (t) { return t['통장'] === id; }).slice();
+  txs.sort(function (a, b) { return a['일시'] < b['일시'] ? -1 : (a['일시'] > b['일시'] ? 1 : (a['등록'] < b['등록'] ? -1 : 1)); });
+  var bal = 0; txs.forEach(function (t) { var a = amount_(t['금액']); bal += t['구분'] === '출금' ? -a : a; t.balance = bal; });
+  var years = {};
+  txs.forEach(function (t) { var y = String(t['일시']).substring(0, 4); var yy = years[y] || (years[y] = { year: y, in: 0, out: 0, count: 0 }); yy.count++; if (t['구분'] === '출금') yy.out += amount_(t['금액']); else yy.in += amount_(t['금액']); });
+  txs.reverse();
+  return { log: txs, years: Object.keys(years).sort().reverse().map(function (y) { return years[y]; }) };
 }
 function accountTxAdd_(tx) {
   var accs = tabRead_(SHEET_ACC, ACOLS);

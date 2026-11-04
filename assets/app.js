@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-04c';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-04e';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -18,7 +18,7 @@
     // v3
     balance: null, settlements: [], settlementsTotal: 0, accounts: [], accountLog: [], accSel: null, accEdit: null, debts: [], debtEdit: null, events: [], evtEdit: null,
     itemCounts: {}, formItems: null, budget: null, budgetSuggest: null, categoryStats: null, listQ: '', listFilter: null, listAll: null, listAllLoading: false,
-    groups: [], groupSel: null, groupEdit: null,
+    groups: [], groupSel: null, groupEdit: null, accLogs: {}, accTxEdit: null, accYear: {},
     syncing: false, returnTo: null,
     loading: false, error: null, prefill: null, toast: null, ocr: null, view: 'home', editId: null
   };
@@ -163,7 +163,9 @@
         case 'accounts': return Object.assign({ ok: true }, accountsRead());
         case 'accountSave': { var it = Object.assign({ '종류': '공금', '소유': '', '메모': '', '활성': 'Y', '목표금액': '', '목표일': '' }, p.item || {}); if (!String(it['이름'] || '').trim()) throw new Error('통장 이름을 입력하세요'); it['목표금액'] = amt(it['목표금액']) || ''; it['목표일'] = String(it['목표일'] || '').substring(0, 10); delete it.goal; delete it.monthly; delete it.balance; delete it.avgMonthly; upsert('acc', it, 'a'); return { ok: true, item: it, accounts: accountsRead() }; }
         case 'accountTransfer': { var fa = tbl('acc'); if (!fa.some(function (a) { return a.id === p.from; }) || !fa.some(function (a) { return a.id === p.to; }) || p.from === p.to) throw new Error('보내는 통장과 받는 통장을 확인하세요'); var ta2 = amt(p.amount); if (ta2 <= 0) throw new Error('금액을 입력하세요'); var w2 = p.date ? p.date + 'T12:00:00' : nowIso(); var nm = function (id) { return (fa.filter(function (a) { return a.id === id; })[0] || {})['이름'] || id; }; var mm = '[이체] ' + (p.memo || ''); var o1 = upsert('acctx', { '일시': w2, '통장': p.from, '구분': '출금', '금액': ta2, '메모': mm + ' → ' + nm(p.to), '거래id': '' }, 't'); upsert('acctx', { '일시': w2, '통장': p.to, '구분': '입금', '금액': ta2, '메모': mm + ' ← ' + nm(p.from), '거래id': '' }, 't'); return { ok: true, item: o1, accounts: accountsRead() }; }
-        case 'accountDelete': { if (tbl('acctx').some(function (t) { return t['통장'] === p.id; })) throw new Error('기록이 있는 통장은 지울 수 없습니다. 대신 끄세요'); del('acc', p.id); return { ok: true, deleted: true, accounts: accountsRead() }; }
+        case 'accountDelete': { var used = tbl('acctx').filter(function (t) { return t['통장'] === p.id; }).length; if (used && !p.cascade) throw new Error('기록이 ' + used + '건 있는 통장입니다. 기록까지 지우려면 확인하세요'); saveTbl('acctx', tbl('acctx').filter(function (t) { return t['통장'] !== p.id; })); del('acc', p.id); return { ok: true, deleted: true, accounts: accountsRead() }; }
+        case 'accountTxUpdate': { var rows2 = tbl('acctx'); var k2 = rows2.findIndex(function (t) { return t.id === p.id; }); if (k2 < 0) throw new Error('기록을 찾지 못했습니다'); var o2 = rows2[k2], tx2 = p.tx || {}; if (tx2['금액'] !== undefined) { var a2 = amt(tx2['금액']); if (a2 <= 0) throw new Error('금액을 입력하세요'); o2['금액'] = a2; } if (tx2['구분'] !== undefined) o2['구분'] = tx2['구분'] === '출금' ? '출금' : '입금'; if (tx2['일시']) o2['일시'] = String(tx2['일시']).length === 10 ? tx2['일시'] + 'T12:00:00' : tx2['일시']; if (tx2['메모'] !== undefined) o2['메모'] = tx2['메모']; saveTbl('acctx', rows2); return { ok: true, item: o2, accounts: accountsRead() }; }
+        case 'accountLog': { var lg = tbl('acctx').filter(function (t) { return t['통장'] === p.id; }).slice().sort(function (a, b) { return a['일시'] < b['일시'] ? -1 : (a['일시'] > b['일시'] ? 1 : (a['등록'] < b['등록'] ? -1 : 1)); }); var bl = 0; lg.forEach(function (t) { bl += t['구분'] === '출금' ? -t['금액'] : t['금액']; t.balance = bl; }); var ys = {}; lg.forEach(function (t) { var y = String(t['일시']).substring(0, 4); var yy = ys[y] || (ys[y] = { year: y, in: 0, out: 0, count: 0 }); yy.count++; if (t['구분'] === '출금') yy.out += t['금액']; else yy.in += t['금액']; }); lg.reverse(); return { ok: true, id: p.id, log: lg, years: Object.keys(ys).sort().reverse().map(function (y) { return ys[y]; }) }; }
         case 'accountTxAdd': { var t = p.tx || {}; var ta = amt(t['금액']); if (ta <= 0) throw new Error('금액을 입력하세요'); if (!tbl('acc').some(function (a) { return a.id === t['통장']; })) throw new Error('통장을 고르세요'); var to = upsert('acctx', { '일시': t['일시'] ? (String(t['일시']).length === 10 ? t['일시'] + 'T12:00:00' : t['일시']) : nowIso(), '통장': t['통장'], '구분': t['구분'] === '출금' ? '출금' : '입금', '금액': ta, '메모': t['메모'] || '', '거래id': t['거래id'] || '' }, 't'); return { ok: true, item: to, accounts: accountsRead() }; }
         case 'accountTxDelete': return { ok: true, deleted: del('acctx', p.id), accounts: accountsRead() };
         case 'debts': return { ok: true, debts: debtsRead() };
@@ -352,10 +354,15 @@
     if (!hasV3() || !state.config) return Promise.resolve();
     var v = state.view;
     if (v === 'settle') return api.call('settlements', {}).then(function (j) { state.balance = j.balance; state.settlements = j.log; state.settlementsTotal = j.total; renderSoft(); });
-    if (v === 'accounts') return api.call('accounts', {}).then(function (j) { state.accounts = j.accounts; state.accountLog = j.log; renderSoft(); });
+    if (v === 'accounts') return api.call('accounts', {}).then(function (j) { state.accounts = j.accounts; state.accountLog = j.log; renderSoft(); return loadAccLog(); });
     if (v === 'categories') return api.call('categories', {}).then(function (j) { state.categoryStats = j.categories; renderSoft(); });
     if (v === 'groups') return api.call('groups', {}).then(function (j) { state.groups = j.groups; renderSoft(); });
     return Promise.resolve();
+  }
+  // 통장 하나의 전체 입출금 기록 (연도별 합계·잔액 포함)
+  function loadAccLog(id) {
+    id = id || state.accSel || ((state.accounts || [])[0] || {}).id; if (!id) return Promise.resolve();
+    return api.call('accountLog', { id: id }).then(function (j) { state.accLogs[id] = j; if (state.view === 'accounts') renderSoft(); }).catch(function () { });
   }
   function refresh() {
     var want = state.cycle;
@@ -705,7 +712,7 @@
       var cur = state.accEdit === 'new' ? {} : (accs.filter(function (a) { return a.id === state.accEdit; })[0] || {});
       var v = Object.assign({ '이름': '', '종류': isShared() ? '공금' : '저축', '소유': '', '메모': '', '활성': 'Y', '목표금액': '', '목표일': '' }, cur);
       h += '<form id="accform" class="card" data-id="' + esc(cur.id || '') + '"><h2>' + (cur.id ? '통장 수정' : '통장 추가') + '</h2>';
-      h += '<div class="field"><label>이름</label><input name="이름" type="text" value="' + esc(v['이름']) + '" placeholder="예: 공금, 지민비상금"></div>';
+      h += '<div class="field"><label>이름 <span class="muted">(바꾸면 기록·카드에 바로 반영)</span></label><input name="이름" type="text" value="' + esc(v['이름']) + '" placeholder="' + (isShared() ? '예: 공금, 지민비상금' : '예: 비상금, 등록금, 자동차 관리비') + '"></div>';
       h += '<div class="row" style="gap:8px;flex-wrap:wrap"><div class="seg" data-name="종류">' + ['공금', '비상금', '저축'].map(function (k) { return '<button type="button" class="' + (v['종류'] === k ? 'on' : '') + '" data-v="' + k + '">' + k + '</button>'; }).join('') + '</div>' + (isShared() ? memberSeg('소유', v['소유'], state.config.members.concat(['공동'])) : '') + '</div>';
       h += '<div class="grid2" style="margin-top:10px"><div class="field"><label>목표 금액 <span class="muted">(목돈 모으기, 선택)</span></label><input name="목표금액" type="text" inputmode="numeric" value="' + esc(v['목표금액'] ? Number(v['목표금액']).toLocaleString('ko-KR') : '') + '" placeholder="예: 10,000,000"></div><div class="field"><label>목표일 <span class="muted">(선택)</span></label><input name="목표일" type="date" value="' + esc(dayKey(v['목표일'] || '')) + '"></div></div>';
       h += '<div class="field"><label>메모</label><input name="메모" type="text" value="' + esc(v['메모']) + '"></div>';
@@ -727,12 +734,33 @@
         '<button type="submit" form="acctxform" class="btn primary block" style="margin-top:8px">기록</button></div>';
       var others = accs.filter(function (a) { return a.id !== acc.id && a['활성'] !== 'N'; });
       if (others.length) h += '<form id="acctransferform" class="card"><h2>다른 통장으로 옮기기</h2><div class="row" style="gap:8px;flex-wrap:wrap"><div class="seg" data-name="to">' + others.map(function (a, i) { return '<button type="button" class="' + (i === 0 ? 'on' : '') + '" data-v="' + esc(a.id) + '">' + esc(a['이름']) + '</button>'; }).join('') + '</div><input type="hidden" name="to" value="' + esc(others[0].id) + '"><input type="hidden" name="from" value="' + esc(acc.id) + '"><div class="field" style="flex:1;min-width:120px;margin:0"><input name="amount" type="text" inputmode="numeric" placeholder="금액" autocomplete="off"></div></div><div class="grid2" style="margin-top:8px"><div class="field" style="margin:0"><input name="date" type="date" value="' + dayKey(nowIso()) + '"></div><div class="field" style="margin:0"><input name="memo" type="text" placeholder="메모"></div></div><button type="submit" class="btn block" style="margin-top:8px">' + esc(acc['이름']) + ' → 옮기기</button></form>';
-      var log = (state.accountLog || []).filter(function (t) { return t['통장'] === acc.id; });
-      h += '<div class="card"><h2>입출금 기록</h2>' + (log.length ? log.map(function (t) {
-        return '<div class="row kv"><span><b class="' + (t['구분'] === '출금' ? 'danger' : 'ok') + '">' + (t['구분'] === '출금' ? '−' : '+') + won(t['금액']) + '</b> <span class="sub">' + fmtDay(t['일시']) + (t['메모'] ? ' · ' + esc(t['메모']) : '') + '</span></span><button class="btn small" data-act="acctxdel" data-id="' + esc(t.id) + '">삭제</button></div>';
-      }).join('') : '<div class="empty" style="padding:12px 0">기록이 없습니다</div>') + '</div>';
+      h += renderAccLog(acc);
     }
     return h;
+  }
+
+  // 입출금 기록: 연도별 표 (날짜 · 입금 · 출금 · 잔액 · 메모), 연도 머리에 합계, 올해만 펼침. 줄의 ✎ 로 수정, ✕ 로 삭제
+  function renderAccLog(acc) {
+    var data = state.accLogs[acc.id];
+    if (!data) return '<div class="card"><h2>입출금 기록</h2><div class="sub">불러오는 중…</div></div>';
+    if (!data.log.length) return '<div class="card"><h2>입출금 기록</h2><div class="empty" style="padding:12px 0">기록이 없습니다</div></div>';
+    var openY = state.accYear[acc.id] !== undefined ? state.accYear[acc.id] : data.years[0].year;
+    var h = '<div class="card"><h2>입출금 기록 <span class="muted">' + data.log.length + '건</span></h2>';
+    data.years.forEach(function (y) {
+      var open = y.year === openY;
+      h += '<div class="yearhead' + (open ? ' open' : '') + '" data-act="accyear" data-y="' + y.year + '"><b>' + y.year + '년</b><span class="sub">입금 <b class="ok">' + won(y.in) + '</b> · 출금 <b class="danger">' + won(y.out) + '</b> · 순 <b>' + (y.in - y.out >= 0 ? '+' : '−') + won(Math.abs(y.in - y.out)) + '</b> · ' + y.count + '건</span><span class="muted">' + (open ? '▴' : '▾') + '</span></div>';
+      if (!open) return;
+      h += '<table class="tbl"><thead><tr><th>날짜</th><th class="r">입금</th><th class="r">출금</th><th class="r">잔액</th><th>메모</th><th></th></tr></thead><tbody>';
+      data.log.filter(function (t) { return String(t['일시']).substring(0, 4) === y.year; }).forEach(function (t) {
+        if (state.accTxEdit === t.id) {
+          h += '<tr><td colspan="6"><form id="acctxeditform" data-id="' + esc(t.id) + '" class="row" style="gap:6px;flex-wrap:wrap"><input name="일시" type="date" value="' + esc(dayKey(t['일시'])) + '" style="width:140px"><div class="seg" data-name="구분"><button type="button" class="' + (t['구분'] !== '출금' ? 'on' : '') + '" data-v="입금">입금</button><button type="button" class="' + (t['구분'] === '출금' ? 'on' : '') + '" data-v="출금">출금</button></div><input type="hidden" name="구분" value="' + esc(t['구분']) + '"><input name="금액" type="text" inputmode="numeric" value="' + esc(Number(t['금액']).toLocaleString('ko-KR')) + '" style="width:110px;text-align:right"><input name="메모" type="text" value="' + esc(t['메모'] || '') + '" placeholder="메모" style="flex:1;min-width:120px"><button type="submit" class="btn small primary">저장</button><button type="button" class="btn small" data-act="acctxcancel">취소</button></form></td></tr>';
+          return;
+        }
+        h += '<tr><td class="nowrap">' + esc(String(t['일시']).substring(5, 10).replace('-', '/')) + '</td><td class="r ok">' + (t['구분'] === '출금' ? '' : won(t['금액'])) + '</td><td class="r danger">' + (t['구분'] === '출금' ? won(t['금액']) : '') + '</td><td class="r">' + won(t.balance) + '</td><td class="memo">' + esc(t['메모'] || '') + '</td><td class="nowrap"><button class="btn small" data-act="acctxedit" data-id="' + esc(t.id) + '" title="수정">✎</button> <button class="btn small" data-act="acctxdel" data-id="' + esc(t.id) + '" title="삭제">✕</button></td></tr>';
+      });
+      h += '</tbody></table>';
+    });
+    return h + '</div>';
   }
 
   // ---- 부채 (대출)
@@ -1123,7 +1151,7 @@
   function onV3Submit(e) {
     e.preventDefault();
     var form = e.target; var id = form.getAttribute('data-id') || ''; var btn = form.querySelector('[type=submit]') || document.querySelector('[form="' + form.id + '"][type=submit]'); if (btn) btn.disabled = true;
-    var done = function (msg) { return function (j) { toast(msg); return refresh(); }; };
+    var done = function (msg) { return function (j) { toast(msg); return refresh().then(function () { if (state.view === 'accounts') return loadAccLog(); }); }; };
     var fail = function (err) { if (btn) btn.disabled = false; toast('실패: ' + err.message); };
     var p;
     switch (form.id) {
@@ -1131,6 +1159,7 @@
         p = api.call('settlePay', { from: v.from, to: v.to, amount: num(v.amount), date: v.date, memo: v.memo, tag: v.tag }).then(function (j) { toast(j.closed ? '남은 금액이 0이 되어 정산 완료 처리했습니다' : '기록했습니다'); return refresh(); }); break; }
       case 'accform': { var a = Object.assign({ id: id }, formVals(form, ['이름', '종류', '소유', '메모', '활성', '목표금액', '목표일'])); a['목표금액'] = a['목표금액'] ? num(a['목표금액']) : ''; p = api.call('accountSave', { item: a }).then(function (j) { state.accEdit = null; state.accSel = j.item.id; toast('저장했습니다'); return refresh(); }); break; }
       case 'acctransferform': { var tf = formVals(form, ['from', 'to', 'amount', 'date', 'memo']); if (!num(tf.amount)) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } p = api.call('accountTransfer', { from: tf.from, to: tf.to, amount: num(tf.amount), date: tf.date, memo: tf.memo }).then(done('옮겼습니다')); break; }
+      case 'acctxeditform': { var ex = formVals(form, ['일시', '구분', '금액', '메모']); if (!num(ex['금액'])) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } ex['금액'] = num(ex['금액']); p = api.call('accountTxUpdate', { id: id, tx: ex }).then(function () { state.accTxEdit = null; toast('고쳤습니다'); return refresh().then(function () { return loadAccLog(); }); }); break; }
       case 'acctxform': { var t = formVals(form, ['통장', '구분', '금액', '일시', '메모']); if (!num(t['금액'])) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } t['금액'] = num(t['금액']); p = api.call('accountTxAdd', { tx: t }).then(done('기록했습니다')); break; }
       case 'debtform': { var d = Object.assign({ id: id }, formVals(form, ['이름', '기관', '시작일', '원금', '연이율', '월상환금', '총회차', '납입회차', '소유', '메모', '활성'])); p = api.call('debtSave', { item: d }).then(function () { state.debtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
       case 'evtform': { var ev = Object.assign({ id: id }, formVals(form, ['이름', '시작일', '종료일', '메모', '상태'])); p = api.call('eventSave', { item: ev }).then(function () { state.evtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
@@ -1220,7 +1249,7 @@
       if (file) file.addEventListener('change', function () { if (file.files[0]) runOcr(file.files[0]); });
     }
     // v3 폼들: seg/chips 는 공통 처리, submit 은 onV3Submit
-    ['settleform', 'accform', 'acctxform', 'acctransferform', 'debtform', 'evtform', 'budgetform', 'recapplyform', 'groupform', 'groupitemform'].forEach(function (fid) {
+    ['settleform', 'accform', 'acctxform', 'acctxeditform', 'acctransferform', 'debtform', 'evtform', 'budgetform', 'recapplyform', 'groupform', 'groupitemform'].forEach(function (fid) {
       var f = document.getElementById(fid); if (!f) return;
       f.addEventListener('submit', onV3Submit);
       var host = fid === 'acctxform' ? f.parentElement : f;
@@ -1354,10 +1383,13 @@
       case 'accnew': state.accEdit = 'new'; render(); break;
       case 'accedit': state.accEdit = el.getAttribute('data-id'); render(); window.scrollTo(0, 0); break;
       case 'acccancel': state.accEdit = null; render(); break;
-      case 'accsel': state.accSel = el.getAttribute('data-id'); render(); break;
+      case 'accsel': state.accSel = el.getAttribute('data-id'); state.accTxEdit = null; render(); if (!state.accLogs[state.accSel]) loadAccLog(state.accSel); break;
+      case 'accyear': { var ay = el.getAttribute('data-y'); state.accYear[state.accSel] = state.accYear[state.accSel] === ay ? '' : ay; render(); break; }
+      case 'acctxedit': state.accTxEdit = el.getAttribute('data-id'); render(); break;
+      case 'acctxcancel': state.accTxEdit = null; render(); break;
       case 'acctoggle': { var aid = el.getAttribute('data-id'); var acc = state.accounts.filter(function (a) { return a.id === aid; })[0]; if (!acc) break; api.call('accountSave', { item: Object.assign({}, acc, { '활성': acc['활성'] === 'N' ? 'Y' : 'N' }) }).then(function () { state.accEdit = null; return refresh(); }).catch(function (err) { toast('실패: ' + err.message); }); break; }
-      case 'accdel': if (!confirm('이 통장을 지울까요? 기록이 있으면 지워지지 않습니다.')) break; api.call('accountDelete', { id: el.getAttribute('data-id') }).then(function () { state.accEdit = null; state.accSel = null; toast('지웠습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); }); break;
-      case 'acctxdel': if (!confirm('이 입출금 기록을 지울까요?')) break; api.call('accountTxDelete', { id: el.getAttribute('data-id') }).then(function () { toast('지웠습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); }); break;
+      case 'accdel': { var dAcc = state.accounts.filter(function (a) { return a.id === el.getAttribute('data-id'); })[0]; var dLog = state.accLogs[el.getAttribute('data-id')]; var dn = dLog ? dLog.log.length : (state.accountLog || []).filter(function (t) { return t['통장'] === el.getAttribute('data-id'); }).length; if (!confirm('"' + (dAcc ? dAcc['이름'] : '') + '" 을(를) 지울까요?' + (dn ? '\n입출금 기록 ' + dn + '건도 같이 지워집니다. 되돌릴 수 없습니다.' : ''))) break; api.call('accountDelete', { id: el.getAttribute('data-id'), cascade: true }).then(function () { state.accEdit = null; state.accSel = null; toast('지웠습니다'); return refresh(); }).catch(function (err) { toast('실패: ' + err.message); }); break; }
+      case 'acctxdel': if (!confirm('이 입출금 기록을 지울까요?')) break; api.call('accountTxDelete', { id: el.getAttribute('data-id') }).then(function () { toast('지웠습니다'); return refresh().then(function () { return loadAccLog(); }); }).catch(function (err) { toast('실패: ' + err.message); }); break;
       case 'debtnew': state.debtEdit = 'new'; render(); break;
       case 'debtedit': state.debtEdit = el.getAttribute('data-id'); render(); window.scrollTo(0, 0); break;
       case 'debtcancel': state.debtEdit = null; render(); break;
