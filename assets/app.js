@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-03b';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-04a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -144,7 +144,7 @@
     function balance() { var c = cfg(); return calcBalance(rows(), tbl('settle').filter(function (s) { return s['상태'] !== '마감'; }), c.members, c.splitRatio); }
     function closeAll() { var all = rows(); var n = 0; all.forEach(function (r) { if (r['유형'] === '지출' && r['정산'] === 'X') { r['정산'] = 'O'; n++; } }); save(all); saveTbl('settle', tbl('settle').map(function (s) { s['상태'] = '마감'; return s; })); return n; }
     function settlementsRead() { var log = tbl('settle').slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); return { balance: balance(), log: log.slice(0, 100), total: log.length }; }
-    function accountsRead() { var txs = tbl('acctx').slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var bal = {}; txs.forEach(function (t) { bal[t['통장']] = (bal[t['통장']] || 0) + (t['구분'] === '출금' ? -t['금액'] : t['금액']); }); return { accounts: tbl('acc').map(function (a) { return Object.assign({}, a, { balance: bal[a.id] || 0 }); }), log: txs.slice(0, 100), total: txs.length }; }
+    function accountsRead() { var txs = tbl('acctx').slice().sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var bal = {}, monthly = {}; var today = dayKey(nowIso()); var from6 = addMonths(today.substring(0, 7) + '-01', -5).substring(0, 7); txs.forEach(function (t) { var sg = t['구분'] === '출금' ? -t['금액'] : t['금액']; bal[t['통장']] = (bal[t['통장']] || 0) + sg; var ym = String(t['일시']).substring(0, 7); if (ym >= from6) { var m = monthly[t['통장']] || (monthly[t['통장']] = {}); m[ym] = (m[ym] || 0) + sg; } }); var accounts = tbl('acc').map(function (a) { var b = bal[a.id] || 0; var m = monthly[a.id] || {}; var avg = Math.round(Object.keys(m).reduce(function (x, k) { return x + m[k]; }, 0) / 6); var target = amt(a['목표금액']); var goal = null; if (target > 0) { var remaining = Math.max(0, target - b); var eta = remaining > 0 && avg > 0 ? Math.ceil(remaining / avg) : null; goal = { target: target, remaining: remaining, progress: Math.min(1, b / target), avgMonthly: avg, etaMonths: eta, etaDate: eta ? addMonths(today, eta) : (remaining === 0 ? today : ''), dueDate: String(a['목표일'] || '').substring(0, 10), neededMonthly: a['목표일'] && remaining > 0 ? Math.ceil(remaining / Math.max(1, monthsBetween(today, String(a['목표일']).substring(0, 10)))) : null }; } return Object.assign({}, a, { balance: b, monthly: m, avgMonthly: avg, goal: goal }); }); var sum = 0; accounts.forEach(function (a) { if (a['활성'] !== 'N') sum += a.balance; }); return { accounts: accounts, sum: sum, log: txs.slice(0, 100), total: txs.length }; }
     function debtsRead() { return tbl('debt').map(function (d) { return Object.assign({}, d, { calc: debtCalc(d) }); }); }
     function eventsRead() { var by = {}; rows().forEach(function (o) { var t = o['태그']; if (!t || o['상태'] === '취소') return; var e = by[t] || (by[t] = { expense: 0, income: 0, count: 0, byPayer: {}, byCategory: {} }); e.count++; if (o['유형'] === '수입') { e.income += o['금액']; return; } e.expense += o['금액']; e.byPayer[o['결제인']] = (e.byPayer[o['결제인']] || 0) + o['금액']; e.byCategory[o['카테고리'] || '미분류'] = (e.byCategory[o['카테고리'] || '미분류'] || 0) + o['금액']; }); var pay = {}; tbl('settle').forEach(function (s) { if (s['태그']) (pay[s['태그']] = pay[s['태그']] || []).push(s); }); return tbl('evt').map(function (e) { return Object.assign({}, e, { stats: by[e['이름']] || { expense: 0, income: 0, count: 0, byPayer: {}, byCategory: {} }, payments: pay[e['이름']] || [] }); }); }
     function itemCounts() { var out = {}; tbl('item').forEach(function (it) { out[it['거래id']] = (out[it['거래id']] || 0) + 1; }); return out; }
@@ -159,7 +159,8 @@
         case 'settleFinish': { var b = balance(); var pay = null; if (b.remaining) pay = upsert('settle', { '일시': nowIso(), '사이클': cfg().currentCycle, '보낸사람': b.remaining.from, '받는사람': b.remaining.to, '금액': b.remaining.amount, '메모': '정산 완료', '태그': '', '상태': '열림' }, 's'); var n = closeAll(); return { ok: true, payment: pay, settledTx: n, balance: balance() }; }
         case 'settleDelete': { var row = tbl('settle').filter(function (s) { return s.id === p.id; })[0]; if (row && row['상태'] === '마감') throw new Error('마감된 정산 기록은 지울 수 없습니다'); return { ok: true, deleted: del('settle', p.id), balance: balance() }; }
         case 'accounts': return Object.assign({ ok: true }, accountsRead());
-        case 'accountSave': { var it = Object.assign({ '종류': '공금', '소유': '', '메모': '', '활성': 'Y' }, p.item || {}); if (!String(it['이름'] || '').trim()) throw new Error('통장 이름을 입력하세요'); upsert('acc', it, 'a'); return { ok: true, item: it, accounts: accountsRead() }; }
+        case 'accountSave': { var it = Object.assign({ '종류': '공금', '소유': '', '메모': '', '활성': 'Y', '목표금액': '', '목표일': '' }, p.item || {}); if (!String(it['이름'] || '').trim()) throw new Error('통장 이름을 입력하세요'); it['목표금액'] = amt(it['목표금액']) || ''; it['목표일'] = String(it['목표일'] || '').substring(0, 10); delete it.goal; delete it.monthly; delete it.balance; delete it.avgMonthly; upsert('acc', it, 'a'); return { ok: true, item: it, accounts: accountsRead() }; }
+        case 'accountTransfer': { var fa = tbl('acc'); if (!fa.some(function (a) { return a.id === p.from; }) || !fa.some(function (a) { return a.id === p.to; }) || p.from === p.to) throw new Error('보내는 통장과 받는 통장을 확인하세요'); var ta2 = amt(p.amount); if (ta2 <= 0) throw new Error('금액을 입력하세요'); var w2 = p.date ? p.date + 'T12:00:00' : nowIso(); var nm = function (id) { return (fa.filter(function (a) { return a.id === id; })[0] || {})['이름'] || id; }; var mm = '[이체] ' + (p.memo || ''); var o1 = upsert('acctx', { '일시': w2, '통장': p.from, '구분': '출금', '금액': ta2, '메모': mm + ' → ' + nm(p.to), '거래id': '' }, 't'); upsert('acctx', { '일시': w2, '통장': p.to, '구분': '입금', '금액': ta2, '메모': mm + ' ← ' + nm(p.from), '거래id': '' }, 't'); return { ok: true, item: o1, accounts: accountsRead() }; }
         case 'accountDelete': { if (tbl('acctx').some(function (t) { return t['통장'] === p.id; })) throw new Error('기록이 있는 통장은 지울 수 없습니다. 대신 끄세요'); del('acc', p.id); return { ok: true, deleted: true, accounts: accountsRead() }; }
         case 'accountTxAdd': { var t = p.tx || {}; var ta = amt(t['금액']); if (ta <= 0) throw new Error('금액을 입력하세요'); if (!tbl('acc').some(function (a) { return a.id === t['통장']; })) throw new Error('통장을 고르세요'); var to = upsert('acctx', { '일시': t['일시'] ? (String(t['일시']).length === 10 ? t['일시'] + 'T12:00:00' : t['일시']) : nowIso(), '통장': t['통장'], '구분': t['구분'] === '출금' ? '출금' : '입금', '금액': ta, '메모': t['메모'] || '', '거래id': t['거래id'] || '' }, 't'); return { ok: true, item: to, accounts: accountsRead() }; }
         case 'accountTxDelete': return { ok: true, deleted: del('acctx', p.id), accounts: accountsRead() };
@@ -186,7 +187,7 @@
             var r3 = v3(action, p, all); if (r3) return resolve(r3);
             switch (action) {
               case 'config': return resolve({ ok: true, config: cfg() });
-              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var m0 = merchantStats(all); var b0 = { ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0, recurring: recs(), recurringDue: due(cy0).map(function (r) { return r.id; }), accounts: accountsRead().accounts, debts: debtsRead(), events: eventsRead(), itemCounts: itemCounts() }; if (c0.ledgerType === 'shared') { var st0 = settlementsRead(); b0.balance = st0.balance; b0.settlements = st0.log.slice(0, 20); } else { b0.budget = budgetFor(cy0); b0.budgetSuggest = budgetSuggest(cy0); } return resolve(b0); }
+              case 'bootstrap': { var c0 = cfg(); var cy0 = p.cycle || c0.currentCycle; var rs0 = all.filter(function (o) { return cy0 === 'all' || o['사이클'] === cy0 || o['상태'] === '미확인'; }); rs0.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); var m0 = merchantStats(all); var ar0 = accountsRead(); var b0 = { ok: true, config: c0, cycle: cy0, rows: rs0, summary: summary(cy0), dict: dict(), merchants: m0, recurring: recs(), recurringDue: due(cy0).map(function (r) { return r.id; }), accounts: ar0.accounts, accountsSum: ar0.sum, debts: debtsRead(), events: eventsRead(), itemCounts: itemCounts() }; if (c0.ledgerType === 'shared') { var st0 = settlementsRead(); b0.balance = st0.balance; b0.settlements = st0.log.slice(0, 20); } else { b0.budget = budgetFor(cy0); b0.budgetSuggest = budgetSuggest(cy0); } return resolve(b0); }
               case 'recurring': { var cyr = p.cycle || cfg().currentCycle; return resolve({ ok: true, recurring: recs(), due: due(cyr).map(function (r) { return r.id; }), cycle: cyr }); }
               case 'recurringSave': { var rl = recs(); var it = Object.assign({ '유형': '지출', '활성': 'Y', '계획': 'Y' }, p.item || {}); it['금액'] = Math.round(Number(String(it['금액']).replace(/[^\d.-]/g, '')) || 0); it['일'] = Math.min(31, Math.max(1, Number(it['일']) || 1)); it['결제인'] = it['결제인'] || cfg().members[0]; if (!it['이름']) throw new Error('이름을 입력하세요'); if (!it['금액']) throw new Error('금액을 입력하세요'); if (!it['카테고리']) it['카테고리'] = it['유형'] === '수입' ? '수입' : ''; var ri = it.id ? rl.findIndex(function (r) { return r.id === it.id; }) : -1; if (ri < 0) { it.id = 'r' + Math.random().toString(36).slice(2); rl.push(it); } else rl[ri] = it; saveRecs(rl); return resolve({ ok: true, item: it, recurring: rl }); }
               case 'recurringDelete': { var rl2 = recs().filter(function (r) { return r.id !== p.id; }); saveRecs(rl2); return resolve({ ok: true, deleted: true, recurring: rl2 }); }
@@ -303,7 +304,7 @@
     state.oldBackend = (j.recurring === undefined);   // 옛 Code.gs 는 recurring 을 모른다
     // v3
     state.balance = j.balance || null; state.settlements = j.settlements || []; state.accounts = j.accounts || []; state.debts = j.debts || []; state.events = j.events || [];
-    state.itemCounts = j.itemCounts || {}; state.budget = j.budget || null; state.budgetSuggest = j.budgetSuggest || null;
+    state.itemCounts = j.itemCounts || {}; state.budget = j.budget || null; state.budgetSuggest = j.budgetSuggest || null; state.accountsSum = j.accountsSum || 0;
     state.extra = {};                                   // 달력용 다른 사이클 거래는 다시 받는다
   }
   // 입력 폼을 쓰는 중에 화면을 통째로 다시 그리면 입력이 날아가므로, 폼 화면에서는 그리지 않는다 (상태만 바뀌고 다음 이동 때 반영)
@@ -661,37 +662,47 @@
   }
 
   // ---- 통장 (공금·비상금)
+  function accWord() { return isShared() ? '통장' : '통장 · 목돈'; }
+  function goalBar(a) {
+    var g = a.goal; if (!g) return '';
+    return '<div class="bar" style="margin-top:4px"><i style="width:' + Math.round(g.progress * 100) + '%"></i></div><div class="sub" style="font-size:12px">목표 ' + won(g.target) + ' · ' + (g.remaining ? won(g.remaining) + ' 남음' + (g.etaDate ? ' · 이 속도면 ' + esc(g.etaDate.substring(0, 7).replace('-', '년 ')) + '월' : '') : '달성!') + '</div>';
+  }
   function renderAccountsCard() {
     var accs = (state.accounts || []).filter(function (a) { return a['활성'] !== 'N'; });
-    if (!accs.length) return '';
-    return '<div class="card tap" data-act="goto" data-to="accounts"><h2>통장</h2><div class="grid2">' + accs.map(function (a) { return '<div><div class="sub">' + esc(a['이름']) + (a['소유'] ? ' <span class="muted">(' + esc(a['소유']) + ')</span>' : '') + '</div><b>' + won(a.balance) + '</b></div>'; }).join('') + '</div><div class="sub" style="margin-top:8px">누르면 입출금 기록 →</div></div>';
+    if (!accs.length) return hasV3() && !isShared() ? '<div class="card tap" data-act="goto" data-to="accounts"><h2>목돈</h2><div class="sub">저축 목표(목표 금액·날짜)를 만들고 넣은 돈을 기록하면 진행률과 예상 달성 시기가 보입니다 →</div></div>' : '';
+    return '<div class="card tap" data-act="goto" data-to="accounts"><h2>' + accWord() + (accs.length > 1 ? ' <span class="muted">합계 ' + won(state.accountsSum || accs.reduce(function (x, a) { return x + a.balance; }, 0)) + '</span>' : '') + '</h2><div class="grid2">' + accs.map(function (a) { return '<div><div class="sub">' + esc(a['이름']) + (a['소유'] ? ' <span class="muted">(' + esc(a['소유']) + ')</span>' : '') + '</div><b>' + won(a.balance) + '</b>' + goalBar(a) + '</div>'; }).join('') + '</div><div class="sub" style="margin-top:8px">누르면 입출금 기록 →</div></div>';
   }
   function renderAccounts() {
     if (!hasV3()) return v3Notice();
     var accs = state.accounts || []; var sel = state.accSel && accs.some(function (a) { return a.id === state.accSel; }) ? state.accSel : (accs[0] && accs[0].id);
-    state.accSel = sel;
+    if (!state.accSel) state.accSel = sel;   // 방금 만든 통장이 아직 목록에 없을 때 선택을 첫 통장으로 덮어쓰지 않는다
     var h = '';
     if (state.accEdit) {
       var cur = state.accEdit === 'new' ? {} : (accs.filter(function (a) { return a.id === state.accEdit; })[0] || {});
-      var v = Object.assign({ '이름': '', '종류': '공금', '소유': '', '메모': '', '활성': 'Y' }, cur);
+      var v = Object.assign({ '이름': '', '종류': isShared() ? '공금' : '저축', '소유': '', '메모': '', '활성': 'Y', '목표금액': '', '목표일': '' }, cur);
       h += '<form id="accform" class="card" data-id="' + esc(cur.id || '') + '"><h2>' + (cur.id ? '통장 수정' : '통장 추가') + '</h2>';
       h += '<div class="field"><label>이름</label><input name="이름" type="text" value="' + esc(v['이름']) + '" placeholder="예: 공금, 지민비상금"></div>';
       h += '<div class="row" style="gap:8px;flex-wrap:wrap"><div class="seg" data-name="종류">' + ['공금', '비상금', '저축'].map(function (k) { return '<button type="button" class="' + (v['종류'] === k ? 'on' : '') + '" data-v="' + k + '">' + k + '</button>'; }).join('') + '</div>' + (isShared() ? memberSeg('소유', v['소유'], state.config.members.concat(['공동'])) : '') + '</div>';
-      h += '<div class="field" style="margin-top:10px"><label>메모</label><input name="메모" type="text" value="' + esc(v['메모']) + '"></div>';
+      h += '<div class="grid2" style="margin-top:10px"><div class="field"><label>목표 금액 <span class="muted">(목돈 모으기, 선택)</span></label><input name="목표금액" type="text" inputmode="numeric" value="' + esc(v['목표금액'] ? Number(v['목표금액']).toLocaleString('ko-KR') : '') + '" placeholder="예: 10,000,000"></div><div class="field"><label>목표일 <span class="muted">(선택)</span></label><input name="목표일" type="date" value="' + esc(dayKey(v['목표일'] || '')) + '"></div></div>';
+      h += '<div class="field"><label>메모</label><input name="메모" type="text" value="' + esc(v['메모']) + '"></div>';
       h += '<input type="hidden" name="종류" value="' + esc(v['종류']) + '"><input type="hidden" name="소유" value="' + esc(v['소유']) + '"><input type="hidden" name="활성" value="' + esc(v['활성']) + '">';
       h += '<div class="row" style="gap:8px">' + (cur.id ? '<button type="button" class="btn danger" data-act="accdel" data-id="' + esc(cur.id) + '">삭제</button><button type="button" class="btn" data-act="acctoggle" data-id="' + esc(cur.id) + '">' + (v['활성'] === 'N' ? '켜기' : '끄기') + '</button>' : '') + '<button type="button" class="btn" data-act="acccancel">취소</button><button type="submit" class="btn primary" style="flex:1">저장</button></div></form>';
     }
-    h += '<div class="card"><div class="row"><h2 style="margin:0">통장</h2><button class="btn small" data-act="accnew">＋ 통장 추가</button></div>';
-    if (!accs.length) h += '<div class="empty" style="padding:16px 0">통장이 없습니다. 공금이나 비상금 통장을 추가하고 현재 잔액을 "입금"으로 넣어 시작하세요.<br>옛 시트의 세이프 박스 기록은 시트 메뉴 "가계부 앱 → 세이프 박스 탭 → 통장 이관"으로 가져옵니다.</div>';
+    h += '<div class="card"><div class="row"><h2 style="margin:0">' + accWord() + (accs.length > 1 ? ' <span class="muted">합계 ' + won(state.accountsSum || 0) + '</span>' : '') + '</h2><button class="btn small" data-act="accnew">＋ ' + (isShared() ? '통장' : '목돈') + ' 추가</button></div>';
+    if (!accs.length) h += '<div class="empty" style="padding:16px 0">' + (isShared() ? '통장이 없습니다. 공금이나 비상금 통장을 추가하고 현재 잔액을 "입금"으로 넣어 시작하세요.' : '목돈 통장이 없습니다. "＋ 목돈 추가"에서 이름·목표 금액·목표일을 넣고, 지금 모아 둔 돈을 "입금"으로 넣어 시작하세요. 매달 넣을 때마다 진행률과 예상 달성 시기가 보입니다.') + '</div>';
     else h += '<div class="chips" style="margin-top:8px">' + accs.map(function (a) { return '<button type="button" class="chip ' + (a.id === sel ? 'on' : '') + (a['활성'] === 'N' ? ' off' : '') + '" data-act="accsel" data-id="' + esc(a.id) + '">' + esc(a['이름']) + ' ' + won(a.balance) + '</button>'; }).join('') + '</div>';
     h += '</div>';
     var acc = accs.filter(function (a) { return a.id === sel; })[0];
     if (acc) {
       h += '<div class="card"><div class="row"><div><h2 style="margin:0">' + esc(acc['이름']) + ' <span class="muted">' + esc(acc['종류']) + (acc['소유'] ? ' · ' + esc(acc['소유']) : '') + '</span></h2><div class="big" style="font-size:26px">' + won(acc.balance) + '</div></div><button class="btn small" data-act="accedit" data-id="' + esc(acc.id) + '">수정</button></div>';
+      if (acc.goal) { var g = acc.goal; h += '<div class="bar" style="margin-top:8px"><i style="width:' + Math.round(g.progress * 100) + '%"></i></div><div class="grid2" style="margin-top:8px">' + kv('목표', won(g.target)) + kv('남은 금액', g.remaining ? won(g.remaining) : '달성!', g.remaining ? '' : 'ok') + kv('최근 6개월 월평균', won(g.avgMonthly)) + kv('이 속도면', g.etaDate ? esc(g.etaDate) + (g.etaMonths ? ' (' + g.etaMonths + '개월)' : '') : '적립이 없어 계산 불가') + (g.dueDate ? kv('목표일', esc(g.dueDate)) + kv('목표일까지 매달', g.neededMonthly ? won(g.neededMonthly) : '-') : '') + '</div>'; }
+      else if (acc.avgMonthly) h += '<div class="sub" style="margin-top:6px">최근 6개월 월평균 ' + (acc.avgMonthly >= 0 ? '+' : '') + won(acc.avgMonthly) + '</div>';
       h += '<form id="acctxform" class="row" style="gap:8px;margin-top:12px;align-items:flex-end;flex-wrap:wrap"><div class="seg" data-name="구분"><button type="button" class="on" data-v="입금">입금</button><button type="button" data-v="출금">출금</button></div><input type="hidden" name="구분" value="입금"><input type="hidden" name="통장" value="' + esc(acc.id) + '">' +
         '<div class="field" style="flex:1;min-width:120px;margin:0"><input name="금액" type="text" inputmode="numeric" placeholder="금액" autocomplete="off" class="amount-input" style="font-size:20px"></div></form>' +
         '<div class="grid2" style="margin-top:8px"><div class="field" style="margin:0"><input name="일시" form="acctxform" type="date" value="' + dayKey(nowIso()) + '"></div><div class="field" style="margin:0"><input name="메모" form="acctxform" type="text" placeholder="메모 (예: 11월 예산 잔액)"></div></div>' +
         '<button type="submit" form="acctxform" class="btn primary block" style="margin-top:8px">기록</button></div>';
+      var others = accs.filter(function (a) { return a.id !== acc.id && a['활성'] !== 'N'; });
+      if (others.length) h += '<form id="acctransferform" class="card"><h2>다른 통장으로 옮기기</h2><div class="row" style="gap:8px;flex-wrap:wrap"><div class="seg" data-name="to">' + others.map(function (a, i) { return '<button type="button" class="' + (i === 0 ? 'on' : '') + '" data-v="' + esc(a.id) + '">' + esc(a['이름']) + '</button>'; }).join('') + '</div><input type="hidden" name="to" value="' + esc(others[0].id) + '"><input type="hidden" name="from" value="' + esc(acc.id) + '"><div class="field" style="flex:1;min-width:120px;margin:0"><input name="amount" type="text" inputmode="numeric" placeholder="금액" autocomplete="off"></div></div><div class="grid2" style="margin-top:8px"><div class="field" style="margin:0"><input name="date" type="date" value="' + dayKey(nowIso()) + '"></div><div class="field" style="margin:0"><input name="memo" type="text" placeholder="메모"></div></div><button type="submit" class="btn block" style="margin-top:8px">' + esc(acc['이름']) + ' → 옮기기</button></form>';
       var log = (state.accountLog || []).filter(function (t) { return t['통장'] === acc.id; });
       h += '<div class="card"><h2>입출금 기록</h2>' + (log.length ? log.map(function (t) {
         return '<div class="row kv"><span><b class="' + (t['구분'] === '출금' ? 'danger' : 'ok') + '">' + (t['구분'] === '출금' ? '−' : '+') + won(t['금액']) + '</b> <span class="sub">' + fmtDay(t['일시']) + (t['메모'] ? ' · ' + esc(t['메모']) : '') + '</span></span><button class="btn small" data-act="acctxdel" data-id="' + esc(t.id) + '">삭제</button></div>';
@@ -860,7 +871,7 @@
     var c = state.config;
     var th = settings.theme || 'light';
     var h = '<div class="card"><h2>화면</h2><div class="row"><span>밝기</span><div class="seg" id="theme-seg">' + [['light', '밝게'], ['dark', '어둡게'], ['auto', '자동']].map(function (o) { return '<button type="button" class="' + (th === o[0] ? 'on' : '') + '" data-act="theme" data-v="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></div><div class="sub" style="margin-top:6px">자동은 휴대폰의 다크 모드 설정을 따릅니다.</div></div>';
-    if (hasV3()) h += '<div class="card"><h2>관리</h2><div class="linklist">' + (isShared() ? '<a href="#settle">정산 기록 <span class="muted">누가 누구에게, 일부 정산</span></a>' : '<a href="#budget">예산 <span class="muted">이번 사이클 총액·카테고리별</span></a>') + '<a href="#accounts">통장 <span class="muted">공금·비상금 잔액과 입출금</span></a><a href="#debts">대출 <span class="muted">남은 원금·납입 진행</span></a><a href="#events">이벤트 <span class="muted">여행처럼 묶어서 보기</span></a><a href="#categories">카테고리 정리 <span class="muted">이름 바꾸기·합치기</span></a><a href="#recurring">고정 항목 <span class="muted">월세·월급</span></a></div></div>';
+    if (hasV3()) h += '<div class="card"><h2>관리</h2><div class="linklist">' + (isShared() ? '<a href="#settle">정산 기록 <span class="muted">누가 누구에게, 일부 정산</span></a>' : '<a href="#budget">예산 <span class="muted">이번 사이클 총액·카테고리별</span></a>') + '<a href="#accounts">' + (isShared() ? '통장 <span class="muted">공금·비상금 잔액과 입출금</span>' : '목돈 <span class="muted">저축 목표·진행률·입출금</span>') + '</a><a href="#debts">대출 <span class="muted">남은 원금·납입 진행</span></a><a href="#events">이벤트 <span class="muted">여행처럼 묶어서 보기</span></a><a href="#categories">카테고리 정리 <span class="muted">이름 바꾸기·합치기</span></a><a href="#recurring">고정 항목 <span class="muted">월세·월급</span></a></div></div>';
     h += '<details class="card adv"><summary><h2 style="display:inline">고급 설정 <span class="muted">연결 주소·PIN·설치 링크·자동 수집</span></h2></summary>';
     h += '<div style="margin-top:12px"><h2>연결</h2>';
     h += '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" value="' + esc(settings.endpoint || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>';
@@ -1050,7 +1061,8 @@
     switch (form.id) {
       case 'settleform': { var v = formVals(form, ['from', 'to', 'amount', 'date', 'memo', 'tag']); if (!num(v.amount)) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; }
         p = api.call('settlePay', { from: v.from, to: v.to, amount: num(v.amount), date: v.date, memo: v.memo, tag: v.tag }).then(function (j) { toast(j.closed ? '남은 금액이 0이 되어 정산 완료 처리했습니다' : '기록했습니다'); return refresh(); }); break; }
-      case 'accform': { var a = Object.assign({ id: id }, formVals(form, ['이름', '종류', '소유', '메모', '활성'])); p = api.call('accountSave', { item: a }).then(function (j) { state.accEdit = null; state.accSel = j.item.id; toast('저장했습니다'); return refresh(); }); break; }
+      case 'accform': { var a = Object.assign({ id: id }, formVals(form, ['이름', '종류', '소유', '메모', '활성', '목표금액', '목표일'])); a['목표금액'] = a['목표금액'] ? num(a['목표금액']) : ''; p = api.call('accountSave', { item: a }).then(function (j) { state.accEdit = null; state.accSel = j.item.id; toast('저장했습니다'); return refresh(); }); break; }
+      case 'acctransferform': { var tf = formVals(form, ['from', 'to', 'amount', 'date', 'memo']); if (!num(tf.amount)) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } p = api.call('accountTransfer', { from: tf.from, to: tf.to, amount: num(tf.amount), date: tf.date, memo: tf.memo }).then(done('옮겼습니다')); break; }
       case 'acctxform': { var t = formVals(form, ['통장', '구분', '금액', '일시', '메모']); if (!num(t['금액'])) { toast('금액을 입력하세요'); if (btn) btn.disabled = false; return; } t['금액'] = num(t['금액']); p = api.call('accountTxAdd', { tx: t }).then(done('기록했습니다')); break; }
       case 'debtform': { var d = Object.assign({ id: id }, formVals(form, ['이름', '기관', '시작일', '원금', '연이율', '월상환금', '총회차', '납입회차', '소유', '메모', '활성'])); p = api.call('debtSave', { item: d }).then(function () { state.debtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
       case 'evtform': { var ev = Object.assign({ id: id }, formVals(form, ['이름', '시작일', '종료일', '메모', '상태'])); p = api.call('eventSave', { item: ev }).then(function () { state.evtEdit = null; toast('저장했습니다'); return refresh(); }); break; }
@@ -1138,7 +1150,7 @@
       if (file) file.addEventListener('change', function () { if (file.files[0]) runOcr(file.files[0]); });
     }
     // v3 폼들: seg/chips 는 공통 처리, submit 은 onV3Submit
-    ['settleform', 'accform', 'acctxform', 'debtform', 'evtform', 'budgetform', 'recapplyform'].forEach(function (fid) {
+    ['settleform', 'accform', 'acctxform', 'acctransferform', 'debtform', 'evtform', 'budgetform', 'recapplyform'].forEach(function (fid) {
       var f = document.getElementById(fid); if (!f) return;
       f.addEventListener('submit', onV3Submit);
       var host = fid === 'acctxform' ? f.parentElement : f;

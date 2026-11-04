@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-03b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-04a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -63,7 +63,7 @@ function doPost(e) {
 var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
-  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1 };
+  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1 };
 
 function handle_(req) {
   CACHE_ = {};
@@ -94,6 +94,7 @@ function handle_(req) {
         case 'accountDelete': return json_({ ok: true, deleted: accountDelete_(req.id), accounts: accountsRead_() });
         case 'accountTxAdd': return json_({ ok: true, item: accountTxAdd_(req.tx || {}), accounts: accountsRead_() });
         case 'accountTxDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_ACCTX, req.id), accounts: accountsRead_() });
+        case 'accountTransfer': return json_({ ok: true, item: accountTransfer_(req), accounts: accountsRead_() });
         case 'debtSave': return json_({ ok: true, item: debtSave_(req.item || {}), debts: debtsRead_() });
         case 'debtDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_DEBT, req.id), debts: debtsRead_() });
         case 'eventSave': return json_({ ok: true, item: eventSave_(req.item || {}), events: eventsRead_() });
@@ -123,7 +124,7 @@ function read_(req) {
       var out = { ok: true, config: publicConfig_(), cycle: cycle, rows: listTx_(cycle, true), summary: summary_(cycle), dict: readDict_(), merchants: recentMerchants_(),
         recurring: readRecurring_(), recurringDue: dueRecurring_(cycle).map(function (r) { return r.id; }) };
       // v3: 홈 카드에 필요한 것들
-      out.accounts = accountsRead_().accounts;
+      var ar = accountsRead_(); out.accounts = ar.accounts; out.accountsSum = ar.sum;
       out.debts = debtsRead_();
       out.events = eventsRead_();
       out.itemCounts = itemCounts_();
@@ -1017,7 +1018,7 @@ var SHEET_EVT = '이벤트';     // 여행 등 묶어서 보는 태그
 var SHEET_ITEM = '품목';      // 영수증 세부 품목 (거래 하나에 여러 줄)
 var SHEET_BUD = '예산';       // 사이클별 예산 (개인). 카테고리 빈칸 = 총액
 var SCOLS = ['id', '일시', '사이클', '보낸사람', '받는사람', '금액', '메모', '태그', '상태', '등록'];
-var ACOLS = ['id', '이름', '종류', '소유', '메모', '활성', '등록'];
+var ACOLS = ['id', '이름', '종류', '소유', '메모', '활성', '등록', '목표금액', '목표일'];   // 목표금액(v3.1): 목돈·저축 목표. 비우면 잔액만 관리
 var ATCOLS = ['id', '일시', '통장', '구분', '금액', '메모', '거래id', '등록'];
 var DCOLS = ['id', '이름', '기관', '원금', '연이율', '월상환금', '시작일', '총회차', '납입회차', '소유', '메모', '활성', '등록'];
 var ECOLS = ['id', '이름', '시작일', '종료일', '메모', '상태', '등록'];
@@ -1033,7 +1034,11 @@ function setupV3_() {
   TAB_DEFS_.forEach(function (def) {
     var name = def[0], cols = def[1];
     var sh = ss.getSheetByName(name);
-    if (sh) return;
+    if (sh) {   // 이미 있는 탭에 열이 늘었으면 머리글만 덧붙인다 (기존 행은 빈칸 = 기본값)
+      var hd = sh.getRange(1, 1, 1, cols.length).getValues()[0];
+      for (var hi = 0; hi < cols.length; hi++) if (String(hd[hi] || '') !== cols[hi]) sh.getRange(1, hi + 1).setValue(cols[hi]).setFontWeight('bold');
+      return;
+    }
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight('bold');
     sh.setFrozenRows(1);
@@ -1217,12 +1222,43 @@ function accountsRead_() {
   var accs = tabRead_(SHEET_ACC, ACOLS);
   var txs = tabRead_(SHEET_ACCTX, ATCOLS).slice();
   txs.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; });
-  var bal = {};
-  txs.forEach(function (t) { var a = amount_(t['금액']); bal[t['통장']] = (bal[t['통장']] || 0) + (t['구분'] === '출금' ? -a : a); });
-  return {
-    accounts: accs.map(function (a) { return Object.assign({}, a, { balance: bal[a.id] || 0 }); }),
-    log: txs.slice(0, 100), total: txs.length
-  };
+  var bal = {}, monthly = {};
+  var today = isoLocal_(new Date()).substring(0, 10);
+  var from6 = addMonths_(today.substring(0, 7) + '-01', -5);   // 최근 6개월 (이번 달 포함)
+  txs.forEach(function (t) {
+    var a = amount_(t['금액']); var signed = t['구분'] === '출금' ? -a : a;
+    bal[t['통장']] = (bal[t['통장']] || 0) + signed;
+    var ym = String(t['일시']).substring(0, 7);
+    if (ym >= from6.substring(0, 7)) { var m = monthly[t['통장']] || (monthly[t['통장']] = {}); m[ym] = (m[ym] || 0) + signed; }
+  });
+  var accounts = accs.map(function (a) {
+    var b = bal[a.id] || 0; var m = monthly[a.id] || {};
+    var net6 = Object.keys(m).reduce(function (x, k) { return x + m[k]; }, 0);
+    var avg = Math.round(net6 / 6);
+    var goal = null; var target = amount_(a['목표금액']);
+    if (target > 0) {
+      var remaining = Math.max(0, target - b);
+      var eta = remaining > 0 && avg > 0 ? Math.ceil(remaining / avg) : null;
+      goal = { target: target, remaining: remaining, progress: Math.min(1, b / target), avgMonthly: avg, etaMonths: eta, etaDate: eta ? addMonths_(today, eta) : (remaining === 0 ? today : ''), dueDate: day_(a['목표일']),
+        neededMonthly: a['목표일'] && remaining > 0 ? Math.ceil(remaining / Math.max(1, monthsBetween_(today, day_(a['목표일'])))) : null };
+    }
+    return Object.assign({}, a, { balance: b, monthly: m, avgMonthly: avg, goal: goal });
+  });
+  var sum = 0; accounts.forEach(function (a) { if (a['활성'] !== 'N') sum += a.balance; });
+  return { accounts: accounts, sum: sum, log: txs.slice(0, 100), total: txs.length };
+}
+// 통장 사이 이체: 출금 + 입금 두 줄을 같은 메모로 넣는다
+function accountTransfer_(req) {
+  var accs = tabRead_(SHEET_ACC, ACOLS);
+  var from = String(req.from || ''), to = String(req.to || '');
+  if (!accs.some(function (a) { return a.id === from; }) || !accs.some(function (a) { return a.id === to; }) || from === to) throw new Error('보내는 통장과 받는 통장을 확인하세요');
+  var amt = amount_(req.amount); if (amt <= 0) throw new Error('금액을 입력하세요');
+  var when = req.date ? (String(req.date).length === 10 ? req.date + 'T12:00:00' : String(req.date).substring(0, 19)) : isoLocal_(new Date());
+  var nameOf = function (id) { return (accs.filter(function (a) { return a.id === id; })[0] || {})['이름'] || id; };
+  var memo = '[이체] ' + String(req.memo || '').trim();
+  var out = tabUpsert_(SHEET_ACCTX, ATCOLS, { '일시': when, '통장': from, '구분': '출금', '금액': amt, '메모': memo + ' → ' + nameOf(to), '거래id': '' }, 't');
+  tabUpsert_(SHEET_ACCTX, ATCOLS, { '일시': when, '통장': to, '구분': '입금', '금액': amt, '메모': memo + ' ← ' + nameOf(from), '거래id': '' }, 't');
+  return out;
 }
 function accountSave_(item) {
   var o = {};
@@ -1233,6 +1269,8 @@ function accountSave_(item) {
   o['소유'] = String(o['소유'] || '').trim();
   o['활성'] = o['활성'] === 'N' ? 'N' : 'Y';
   o['메모'] = String(o['메모'] || '').trim();
+  o['목표금액'] = amount_(o['목표금액']) || '';
+  o['목표일'] = day_(o['목표일']);
   return tabUpsert_(SHEET_ACC, ACOLS, o, 'a');
 }
 function accountDelete_(id) {
