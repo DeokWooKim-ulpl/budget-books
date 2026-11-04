@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-04c';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-04d';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정', '분담'];   // 분담(v3.1, 공동): 반영될 거래의 분담 (빈칸=같이, 이름=그 사람 전액)
@@ -1585,8 +1585,8 @@ function migrateSafeBox(force) {
     if (APP_SHEETS_.indexOf(name) >= 0) return;
     var vals = sh.getDataRange().getValues();
     var head = -1, ci = {};
-    for (var r = 0; r < vals.length && head < 0; r++) for (var c = 0; c < vals[r].length; c++) if (String(vals[r][c]).trim() === '연번') { head = r; for (var k = c; k < vals[r].length; k++) ci[String(vals[r][k]).trim()] = k; break; }
-    if (head < 0) { log.push(name + ': 연번 머리글 없음'); return; }
+    for (var r = 0; r < vals.length && head < 0; r++) for (var c = 0; c < vals[r].length; c++) if (String(vals[r][c]).trim() === '연번') { var cand = blockHeaders_(vals[r], c); if (cand['항목'] !== undefined && cand['금액'] !== undefined) { head = r; ci = cand; break; } }
+    if (head < 0) { log.push(name + ': 연번·항목·금액 머리글 없음'); return; }
     var n = 0, year = new Date().getFullYear(), prevDate = null;
     for (var i = head + 1; i < vals.length; i++) {
       var row = vals[i];
@@ -1613,6 +1613,12 @@ function fullDate_(v) {
   if (v instanceof Date) return isoLocal_(v).substring(0, 10) + 'T12:00:00';
   var m = /(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})/.exec(String(v || ''));
   return m ? m[1] + '-' + (m[2].length < 2 ? '0' : '') + m[2] + '-' + (m[3].length < 2 ? '0' : '') + m[3] + 'T12:00:00' : null;
+}
+// 머리글 행에서 c0 부터 오른쪽으로 빈칸 전까지 {머리글: 열}. 같은 행에 표가 여러 개면 각 표만 따로 읽기 위해 쓴다 (먼저 나온 머리글 우선)
+function blockHeaders_(row, c0) {
+  var ci = {};
+  for (var k = c0; k < row.length; k++) { var h = String(row[k]).trim(); if (!h) break; if (ci[h] === undefined) ci[h] = k; }
+  return ci;
 }
 function accountByName_(name) {
   var hit = tabRead_(SHEET_ACC, ACOLS).filter(function (a) { return a['이름'] === name; })[0];
@@ -1815,17 +1821,21 @@ function migrateFixedCosts(force) {
   ss.getSheets().forEach(function (sh) {
     var name = sh.getName();
     if (APP_SHEETS_.indexOf(name) >= 0) return;
+    if (/\d{2,4}\s*년/.test(name)) return;   // 월별 기록 탭(2024년, 26년 1월 …) 안의 고정지출 표는 그 달의 지출 기록이지 템플릿이 아니다
     var vals = sh.getDataRange().getValues();
     for (var r = 0; r < vals.length; r++) {
-      var ci = {};
-      for (var c = 0; c < vals[r].length; c++) { var h = String(vals[r][c]).trim(); if (h) ci[h] = c; }
+     var starts = []; for (var c0 = 0; c0 < vals[r].length; c0++) { var hh = String(vals[r][c0]).trim(); if (hh === '연번' || (hh === '카테고리' && (c0 === 0 || !String(vals[r][c0 - 1]).trim()))) starts.push(c0); }
+     for (var si = 0; si < starts.length; si++) {
+      var ci = blockHeaders_(vals[r], starts[si]);
       var cat = ci['카테고리'], amt = ci['금액'], store = ci['지출처'] !== undefined ? ci['지출처'] : ci['구매처'];
       var dayCol = ci['지출 일자'] !== undefined ? ci['지출 일자'] : (ci['예상 지출일자'] !== undefined ? ci['예상 지출일자'] : ci['지출일자']);
       // 고정지출 표만: 지출처 열이 있고, 거래 표(지출일자·구매처·세부내역·항목·결제인)가 아니어야 한다
       if (cat === undefined || amt === undefined || ci['지출처'] === undefined) continue;
       if (ci['지출일자'] !== undefined || ci['구매처'] !== undefined || ci['세부내역'] !== undefined || ci['항목'] !== undefined || ci['결제인'] !== undefined) continue;
       var owner = members[0];
-      for (var up = r - 1; up >= Math.max(0, r - 6); up--) { var line = vals[up].join(' '); var hit = members.filter(function (m) { return line.indexOf(m) >= 0; })[0]; if (hit) { owner = hit; break; } }
+      // 표 위쪽(같은 열 범위)에서 멤버 이름을 찾는다. 두 사람 표가 나란히 있으면 각자 자기 표의 제목을 본다
+      var cEnd = Math.max.apply(null, Object.keys(ci).map(function (k) { return ci[k]; }));
+      for (var up = r - 1; up >= 0 && !(up < r - 12); up--) { var line = vals[up].slice(Math.max(0, starts[si] - 1), cEnd + 2).join(' '); var hit = members.filter(function (m) { return line.indexOf(m) >= 0; })[0]; if (hit) { owner = hit; break; } }
       var cnt = 0;
       for (var i = r + 1; i < vals.length; i++) {
         var row = vals[i];
@@ -1841,7 +1851,7 @@ function migrateFixedCosts(force) {
         n++; cnt++;
       }
       if (cnt) log.push(name + ' (' + owner + '): ' + cnt + '건');
-      r += cnt;
+     }
     }
   });
   log.push('고정 항목 ' + n + '건 추가' + (skipped ? ', 이미 있어 건너뜀 ' + skipped + '건' : ''));
