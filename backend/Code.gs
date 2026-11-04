@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-04a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-04b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
@@ -140,7 +140,7 @@ function read_(req) {
     case 'items': return { ok: true, items: itemsRead_(req.txId) };
     case 'budget': { var bc = req.cycle || currentCycle_(); return { ok: true, cycle: bc, budget: budgetFor_(bc), suggest: budgetSuggest_(bc) }; }
     case 'categories': return { ok: true, categories: categoryStats_() };
-    case 'health': return admin_(req);
+    case 'health': case 'readTab': return admin_(req);
     default: return { ok: false, error: 'unknown action' };
   }
 }
@@ -1711,7 +1711,16 @@ function admin_(req) {
       CACHE_.rec = null;
       return { ok: true, deleted: vals.length - keep.length, remaining: keep.length };
     }
-    case 'health': return { ok: true, version: API_VERSION, build: SERVER_BUILD, tabs: SpreadsheetApp.getActive().getSheets().map(function (s) { return s.getName(); }), triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+    case 'health': return { ok: true, version: API_VERSION, build: SERVER_BUILD, tabs: SpreadsheetApp.getActive().getSheets().map(function (s) { return { name: s.getName(), rows: s.getLastRow(), cols: s.getLastColumn() }; }), triggers: ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }) };
+    case 'readTab': {   // 운영자용: 탭 내용을 그대로 읽는다 (옛 탭 점검·이관 설계에 씀). 표시값(displayValues) 기준, 빈 행은 뺀다
+      var sh = SpreadsheetApp.getActive().getSheetByName(String(req.name || ''));
+      if (!sh) throw new Error('탭 없음: ' + req.name);
+      var lr = sh.getLastRow(), lc = sh.getLastColumn(); if (!lr || !lc) return { ok: true, name: req.name, rows: [] };
+      var r0 = Math.max(1, Number(req.from) || 1), n = Math.min(lr - r0 + 1, Number(req.limit) || 400);
+      var vals = sh.getRange(r0, 1, n, lc).getDisplayValues();
+      var out = []; vals.forEach(function (row, i) { if (row.some(function (c) { return c !== ''; })) out.push([r0 + i].concat(row)); });
+      return { ok: true, name: req.name, lastRow: lr, lastCol: lc, rows: out };
+    }
   }
   return null;
 }
