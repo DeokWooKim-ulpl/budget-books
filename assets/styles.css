@@ -252,6 +252,7 @@ details.adv[open] > summary::after { content: '접기 ▴'; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl .r { text-align: right; white-space: nowrap; }
 .tbl .nowrap { white-space: nowrap; }
-.tbl .memo { color: var(--muted); font-size: 13px; word-break: break-all; }
+.tbl .memo { color: var(--muted); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; min-width: 84px; }
+.tbl td:last-child { white-space: nowrap; width: 1%; }
 .tbl .btn.small { padding: 3px 7px; font-size: 12px; }
 @media (max-width: 480px) { .tbl th:nth-child(4), .tbl td:nth-child(4) { display: none; } }   /* 좁은 폰에서는 잔액 열 숨김 */
