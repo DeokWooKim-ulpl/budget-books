@@ -239,3 +239,5 @@ details.adv[open] > summary::after { content: '접기 ▴'; }
 .recapply-row:last-child { border-bottom: 0; }
 .recapply-row input[type=text] { border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 10px; outline: none; min-width: 0; }
 .recapply-row input[type=text]:focus { border-color: var(--accent); }
+
+.chips.multi .chip:not(.on) { opacity: .45; text-decoration: line-through; }

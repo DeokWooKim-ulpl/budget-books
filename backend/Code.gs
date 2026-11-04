@@ -19,10 +19,10 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-04b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-04c';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
-var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정'];
+var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정', '분담'];   // 분담(v3.1, 공동): 반영될 거래의 분담 (빈칸=같이, 이름=그 사람 전액)
 var RCOL = {};
 RCOLS.forEach(function (c, i) { RCOL[c] = i; });
 
@@ -63,7 +63,8 @@ function doPost(e) {
 var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
-  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1 };
+  eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1,
+  groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1 };
 
 function handle_(req) {
   CACHE_ = {};
@@ -95,6 +96,12 @@ function handle_(req) {
         case 'accountTxAdd': return json_({ ok: true, item: accountTxAdd_(req.tx || {}), accounts: accountsRead_() });
         case 'accountTxDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_ACCTX, req.id), accounts: accountsRead_() });
         case 'accountTransfer': return json_({ ok: true, item: accountTransfer_(req), accounts: accountsRead_() });
+        case 'groupSave': return json_({ ok: true, item: groupSave_(req.item || {}), groups: groupsRead_() });
+        case 'groupDelete': return json_({ ok: true, deleted: groupDelete_(req.id), groups: groupsRead_() });
+        case 'groupItemSave': return json_({ ok: true, item: groupItemSave_(req.item || {}), groups: groupsRead_() });
+        case 'groupItemDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_GRPI, req.id), groups: groupsRead_() });
+        case 'groupPaySave': return json_({ ok: true, item: groupPaySave_(req.item || {}), groups: groupsRead_() });
+        case 'groupPayDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_GRPP, req.id), groups: groupsRead_() });
         case 'debtSave': return json_({ ok: true, item: debtSave_(req.item || {}), debts: debtsRead_() });
         case 'debtDelete': return json_({ ok: true, deleted: tabDelete_(SHEET_DEBT, req.id), debts: debtsRead_() });
         case 'eventSave': return json_({ ok: true, item: eventSave_(req.item || {}), events: eventsRead_() });
@@ -127,6 +134,7 @@ function read_(req) {
       var ar = accountsRead_(); out.accounts = ar.accounts; out.accountsSum = ar.sum;
       out.debts = debtsRead_();
       out.events = eventsRead_();
+      out.groups = groupsRead_().filter(function (g) { return g['상태'] !== '마감'; }).slice(0, 5);
       out.itemCounts = itemCounts_();
       if (cfg_('LEDGER_TYPE') === 'shared') { var st = settlementsRead_(); out.balance = st.balance; out.settlements = st.log.slice(0, 20); }
       else { out.budget = budgetFor_(cycle); out.budgetSuggest = budgetSuggest_(cycle); }
@@ -137,6 +145,7 @@ function read_(req) {
     case 'accounts': return Object.assign({ ok: true }, accountsRead_());
     case 'debts': return { ok: true, debts: debtsRead_() };
     case 'events': return { ok: true, events: eventsRead_() };
+    case 'groups': return { ok: true, groups: groupsRead_() };
     case 'items': return { ok: true, items: itemsRead_(req.txId) };
     case 'budget': { var bc = req.cycle || currentCycle_(); return { ok: true, cycle: bc, budget: budgetFor_(bc), suggest: budgetSuggest_(bc) }; }
     case 'categories': return { ok: true, categories: categoryStats_() };
@@ -196,6 +205,9 @@ function setup() {
     rec.getRange('D:D').setNumberFormat('#,##0');
     rec.getRange('K:L').setNumberFormat('yyyy-mm-dd hh:mm');
   }
+  // 고정 탭에 v3.1 열(분담)이 없으면 머리글만 덧붙인다
+  var rh = rec.getRange(1, 1, 1, RCOLS.length).getValues()[0];
+  for (var ri = 0; ri < RCOLS.length; ri++) if (String(rh[ri] || '') !== RCOLS[ri]) rec.getRange(1, ri + 1).setValue(RCOLS[ri]).setFontWeight('bold');
   setupV3_();
 }
 
@@ -611,6 +623,7 @@ function saveRecurring_(item) {
   o['계획'] = cfg_('LEDGER_TYPE') === 'personal' ? (o['계획'] === 'N' ? 'N' : 'Y') : '';
   o['활성'] = o['활성'] === 'N' ? 'N' : 'Y';
   o['메모'] = String(o['메모'] || '').trim();
+  o['분담'] = cfg_('LEDGER_TYPE') === 'shared' ? String(o['분담'] || '').trim() : '';
   var now = isoLocal_(new Date());
   var r = -1;
   if (o.id) {
@@ -664,7 +677,7 @@ function applyRecurring_(cycle, ids, amounts, updateDefault) {
     if (amt !== r['금액'] && updateDefault.indexOf(r.id) >= 0) saveRecurring_(Object.assign({}, r, { '금액': amt }));
     return addTx_({
       '일시': recurringDate_(r, cycle), '유형': r['유형'], '금액': amt, '가맹점': r['이름'], '카테고리': r['카테고리'],
-      '항목': r['메모'], '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': recurringKey_(r.id)
+      '항목': r['메모'], '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': recurringKey_(r.id), '분담': r['분담'] || ''
     });
   });
 }
@@ -1024,10 +1037,16 @@ var DCOLS = ['id', '이름', '기관', '원금', '연이율', '월상환금', '�
 var ECOLS = ['id', '이름', '시작일', '종료일', '메모', '상태', '등록'];
 var ICOLS = ['id', '거래id', '품목', '수량', '금액', '등록'];
 var BCOLS = ['사이클', '카테고리', '금액', '수정'];
-var TEXT_COLS_ = { '사이클': 1, '시작일': 1, '종료일': 1, '통장': 1 };   // 시트가 날짜로 바꾸지 못하게 글자 서식을 거는 열
+var SHEET_GRP = '모임';         // 회식·학회 등 여러 명이 나눠 내는 정산 (v3.1)
+var SHEET_GRPI = '모임항목';
+var SHEET_GRPP = '모임납입';
+var GCOLS = ['id', '이름', '날짜', '참여자', '메모', '상태', '등록'];                       // 참여자: 쉼표 구분. 상태 진행|마감
+var GICOLS = ['id', '모임id', '일자', '항목', '금액', '낸사람', '참여자', '메모', '등록'];   // 참여자 빈칸 = 모임 전원
+var GPCOLS = ['id', '모임id', '일자', '보낸사람', '받는사람', '금액', '메모', '등록'];
+var TEXT_COLS_ = { '사이클': 1, '시작일': 1, '종료일': 1, '통장': 1, '날짜': 1, '일자': 1, '목표일': 1 };   // 시트가 날짜로 바꾸지 못하게 글자 서식을 거는 열
 var DATE_COLS_ = { '일시': 1, '등록': 1, '수정': 1 };
-var APP_SHEETS_ = [SHEET_TX, SHEET_CFG, SHEET_DICT, SHEET_REC, SHEET_SET, SHEET_ACC, SHEET_ACCTX, SHEET_DEBT, SHEET_EVT, SHEET_ITEM, SHEET_BUD];
-var TAB_DEFS_ = [[SHEET_SET, SCOLS], [SHEET_ACC, ACOLS], [SHEET_ACCTX, ATCOLS], [SHEET_DEBT, DCOLS], [SHEET_EVT, ECOLS], [SHEET_ITEM, ICOLS], [SHEET_BUD, BCOLS]];
+var APP_SHEETS_ = [SHEET_TX, SHEET_CFG, SHEET_DICT, SHEET_REC, SHEET_SET, SHEET_ACC, SHEET_ACCTX, SHEET_DEBT, SHEET_EVT, SHEET_ITEM, SHEET_BUD, SHEET_GRP, SHEET_GRPI, SHEET_GRPP];
+var TAB_DEFS_ = [[SHEET_SET, SCOLS], [SHEET_ACC, ACOLS], [SHEET_ACCTX, ATCOLS], [SHEET_DEBT, DCOLS], [SHEET_EVT, ECOLS], [SHEET_ITEM, ICOLS], [SHEET_BUD, BCOLS], [SHEET_GRP, GCOLS], [SHEET_GRPI, GICOLS], [SHEET_GRPP, GPCOLS]];
 
 function setupV3_() {
   var ss = SpreadsheetApp.getActive();
@@ -1492,6 +1511,65 @@ function renameCategory_(from, to) {
   return { tx: n, from: from, to: to };
 }
 
+// ---------------------------------------------------------------- 모임 정산: 여러 명이 나눠 내기 (회식·학회·여행)
+// 각자 부담 = 참여한 항목 금액 ÷ 참여자 수. 낸 돈 = 자기가 계산한 항목 + 보낸 납입. 순액 = 낸 돈 − 부담. 양수면 받을 사람, 음수면 줄 사람.
+function groupCalc_(g, items, pays) {
+  var members = split_(g['참여자']);
+  var paid = {}, share = {}, net = {};
+  members.forEach(function (m) { paid[m] = 0; share[m] = 0; });
+  var total = 0;
+  items.forEach(function (it) {
+    var amt = amount_(it['금액']); total += amt;
+    var who = String(it['낸사람'] || '').trim(); if (who) { if (paid[who] === undefined) { paid[who] = 0; share[who] = 0; } paid[who] += amt; }
+    var parts = split_(it['참여자']); if (!parts.length) parts = members;
+    parts.forEach(function (m) { if (share[m] === undefined) { paid[m] = 0; share[m] = 0; } share[m] += amt / parts.length; });
+  });
+  pays.forEach(function (p) { var a = amount_(p['금액']); if (paid[p['보낸사람']] !== undefined) paid[p['보낸사람']] += a; if (paid[p['받는사람']] !== undefined) paid[p['받는사람']] -= a; });
+  Object.keys(paid).forEach(function (m) { net[m] = Math.round(paid[m] - (share[m] || 0)); });
+  // 누가 누구에게: 가장 많이 줄 사람 → 가장 많이 받을 사람 (greedy)
+  var debt = Object.keys(net).filter(function (m) { return net[m] < 0; }).map(function (m) { return { m: m, v: -net[m] }; }).sort(function (a, b) { return b.v - a.v; });
+  var cred = Object.keys(net).filter(function (m) { return net[m] > 0; }).map(function (m) { return { m: m, v: net[m] }; }).sort(function (a, b) { return b.v - a.v; });
+  var transfers = []; var i = 0, j = 0;
+  while (i < debt.length && j < cred.length) { var x = Math.min(debt[i].v, cred[j].v); if (x > 0) transfers.push({ from: debt[i].m, to: cred[j].m, amount: x }); debt[i].v -= x; cred[j].v -= x; if (debt[i].v <= 0) i++; if (cred[j].v <= 0) j++; }
+  return { members: Object.keys(paid), total: total, paid: paid, share: share, net: net, transfers: transfers, count: items.length };
+}
+function groupsRead_() {
+  var items = tabRead_(SHEET_GRPI, GICOLS), pays = tabRead_(SHEET_GRPP, GPCOLS);
+  return tabRead_(SHEET_GRP, GCOLS).map(function (g) {
+    var its = items.filter(function (it) { return it['모임id'] === g.id; }).sort(function (a, b) { return a['일자'] < b['일자'] ? -1 : 1; });
+    var ps = pays.filter(function (p) { return p['모임id'] === g.id; });
+    return Object.assign({}, g, { items: its, payments: ps, calc: groupCalc_(g, its, ps) });
+  }).sort(function (a, b) { return a['날짜'] < b['날짜'] ? 1 : -1; });
+}
+function groupSave_(item) {
+  var o = {}; GCOLS.forEach(function (c) { o[c] = item[c] === undefined || item[c] === null ? '' : item[c]; });
+  o['이름'] = String(o['이름'] || '').trim(); if (!o['이름']) throw new Error('모임 이름을 입력하세요');
+  o['참여자'] = split_(o['참여자']).join(','); if (!o['참여자']) throw new Error('참여자를 쉼표로 넣으세요');
+  o['날짜'] = day_(o['날짜']) || isoLocal_(new Date()).substring(0, 10);
+  o['상태'] = o['상태'] === '마감' ? '마감' : '진행'; o['메모'] = String(o['메모'] || '').trim();
+  return tabUpsert_(SHEET_GRP, GCOLS, o, 'g');
+}
+function groupItemSave_(item) {
+  var o = {}; GICOLS.forEach(function (c) { o[c] = item[c] === undefined || item[c] === null ? '' : item[c]; });
+  if (!tabRead_(SHEET_GRP, GCOLS).some(function (g) { return g.id === o['모임id']; })) throw new Error('모임을 먼저 만드세요');
+  o['금액'] = amount_(o['금액']); if (o['금액'] <= 0) throw new Error('금액을 입력하세요');
+  o['항목'] = String(o['항목'] || '').trim() || '항목'; o['낸사람'] = String(o['낸사람'] || '').trim();
+  o['참여자'] = split_(o['참여자']).join(','); o['일자'] = day_(o['일자']) || isoLocal_(new Date()).substring(0, 10); o['메모'] = String(o['메모'] || '').trim();
+  return tabUpsert_(SHEET_GRPI, GICOLS, o, 'gi');
+}
+function groupPaySave_(item) {
+  var o = {}; GPCOLS.forEach(function (c) { o[c] = item[c] === undefined || item[c] === null ? '' : item[c]; });
+  o['금액'] = amount_(o['금액']); if (o['금액'] <= 0) throw new Error('금액을 입력하세요');
+  if (!o['보낸사람'] || !o['받는사람'] || o['보낸사람'] === o['받는사람']) throw new Error('보낸 사람과 받는 사람을 확인하세요');
+  o['일자'] = day_(o['일자']) || isoLocal_(new Date()).substring(0, 10); o['메모'] = String(o['메모'] || '').trim();
+  return tabUpsert_(SHEET_GRPP, GPCOLS, o, 'gp');
+}
+function groupDelete_(id) {
+  tabRead_(SHEET_GRPI, GICOLS).filter(function (it) { return it['모임id'] === id; }).forEach(function (it) { tabDelete_(SHEET_GRPI, it.id); });
+  tabRead_(SHEET_GRPP, GPCOLS).filter(function (p) { return p['모임id'] === id; }).forEach(function (p) { tabDelete_(SHEET_GRPP, p.id); });
+  return tabDelete_(SHEET_GRP, id);
+}
+
 // ---------------------------------------------------------------- 옛 탭 → 새 탭 이관 (시트 메뉴)
 // 세이프 박스 탭: "연번 | 연도 | 날짜 | 항목 | 금액 | 메모" 블록을 통장거래로. 항목(지민비상금/공금)이 통장 이름이 된다. 음수 = 출금.
 function migrateSafeBox(force) {
@@ -1503,7 +1581,7 @@ function migrateSafeBox(force) {
   var log = [];
   ss.getSheets().forEach(function (sh) {
     var name = sh.getName();
-    if (name.indexOf('세이프') < 0 && name.indexOf('비상금') < 0 && name.indexOf('통장') !== 0) return;
+    if (name.indexOf('세이프') < 0 && name.indexOf('비상금') < 0 && name.indexOf('통장') !== 0 && name.indexOf('목돈') < 0) return;
     if (APP_SHEETS_.indexOf(name) >= 0) return;
     var vals = sh.getDataRange().getValues();
     var head = -1, ci = {};
@@ -1515,7 +1593,8 @@ function migrateSafeBox(force) {
       var acc = String(row[ci['항목']] || '').trim(); var amt = cellAmount_(row[ci['금액']]);
       if (!acc || !amt) continue;
       var ym = /(\d{4})/.exec(String(row[ci['연도']] || '')); if (ym) year = Number(ym[1]);
-      var date = cellDate_(row[ci['날짜']], { year: year }, prevDate) || (year + '-01-01T12:00:00'); prevDate = date;
+      var rawD = row[ci['날짜']]; var mo = /^(\d{1,2})\s*월$/.exec(String(rawD || '').trim());
+      var date = mo ? year + '-' + (mo[1].length < 2 ? '0' : '') + mo[1] + '-25T12:00:00' : (cellDate_(rawD, { year: year }, prevDate) || (year + '-01-01T12:00:00')); prevDate = date;
       var account = accountByName_(acc);
       var memo = String(row[ci['메모 사항']] || row[ci['메모']] || '').trim();
       tabUpsert_(SHEET_ACCTX, ATCOLS, { '일시': date, '통장': account.id, '구분': amt < 0 ? '출금' : '입금', '금액': Math.abs(amt), '메모': '[이관] ' + memo, '거래id': '' }, 't');
@@ -1539,7 +1618,7 @@ function accountByName_(name) {
   var hit = tabRead_(SHEET_ACC, ACOLS).filter(function (a) { return a['이름'] === name; })[0];
   if (hit) return hit;
   var owner = split_(cfg_('MEMBERS')).filter(function (m) { return name.indexOf(m) >= 0; })[0] || '';
-  return accountSave_({ '이름': name, '종류': name.indexOf('비상') >= 0 ? '비상금' : (name.indexOf('저축') >= 0 ? '저축' : '공금'), '소유': owner, '활성': 'Y' });
+  return accountSave_({ '이름': name, '종류': name.indexOf('비상') >= 0 ? '비상금' : (cfg_('LEDGER_TYPE') === 'personal' || name.indexOf('저축') >= 0 ? '저축' : '공금'), '소유': owner, '활성': 'Y' });
 }
 // "대출 상환 표" 탭: A열 이름표 / B열 값 (대출일자, 대출기관, 대출 원금, 이율, 상환방식, 요상환 금액, 월상환금) → 부채 탭
 function migrateLoan(force) {
@@ -1758,7 +1837,7 @@ function migrateFixedCosts(force) {
         var day = dm ? Number(dm[1]) : startDay;
         var memo = ['[이관] ' + name, dayCol !== undefined && row[dayCol] ? String(row[dayCol]).trim() : '', ci['지출 위치'] !== undefined ? String(row[ci['지출 위치']] || '').trim() : ''].filter(Boolean).join(' · ');
         if (!force && have.some(function (x) { return x['이름'] === itemName && x['금액'] === amount; })) { skipped++; continue; }
-        saveRecurring_({ '유형': '지출', '이름': itemName, '금액': amount, '카테고리': category, '결제인': owner, '일': day, '계획': 'Y', '활성': 'Y', '메모': memo });
+        saveRecurring_({ '유형': '지출', '이름': itemName, '금액': amount, '카테고리': category, '결제인': owner, '일': day, '계획': 'Y', '활성': 'Y', '메모': memo, '분담': type === 'shared' ? owner : '' });
         n++; cnt++;
       }
       if (cnt) log.push(name + ' (' + owner + '): ' + cnt + '건');
