@@ -8,11 +8,13 @@
   :root:not([data-theme="light"]) {
     --bg: #0f1115; --card: #181b22; --text: #e8eaf0; --muted: #9aa3b2; --line: #2a2f3a;
     --accent: #5b8def; --accent-soft: #1b2740; --danger: #ff6b5e; --ok: #4cc38a; --warn: #f0b35a; --warn-soft: #3a2d14;
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0f1115; --card: #181b22; --text: #e8eaf0; --muted: #9aa3b2; --line: #2a2f3a;
   --accent: #5b8def; --accent-soft: #1b2740; --danger: #ff6b5e; --ok: #4cc38a; --warn: #f0b35a; --warn-soft: #3a2d14;
+  color-scheme: dark;   /* 브라우저가 그리는 것(날짜 칸의 달력 아이콘, 체크박스)도 어두운 테마에 맞춘다 */
 }
 :root[data-ledger="personal"] { --accent: #0f9d58; --accent-soft: #e3f5ea; }
 @media (prefers-color-scheme: dark) { :root[data-ledger="personal"]:not([data-theme="light"]) { --accent: #4cc38a; --accent-soft: #15301f; } }
@@ -51,7 +53,7 @@ header.top h1 { font-size: 18px; margin: 0; font-weight: 700; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
 .btn.block { width: 100%; }
-.btn.small { padding: 6px 10px; font-size: 13px; border-radius: 9px; }
+.btn.small { padding: 6px 10px; font-size: 13px; border-radius: 9px; white-space: nowrap; flex: 0 0 auto; }   /* nowrap: 옆 글이 길어도 '수/정'처럼 쪼개지지 않게 */
 .btn:disabled { opacity: .5; cursor: default; }
 
 .field { margin: 12px 0; }
@@ -79,6 +81,7 @@ header.top h1 { font-size: 18px; margin: 0; font-weight: 700; }
 .tx .amt.income { color: var(--ok); }
 .tx.unconfirmed { border-color: var(--warn); }
 .tx.cancelled { opacity: .5; text-decoration: line-through; }
+.tx.pending { opacity: .6; cursor: default; }
 .badge { display: inline-block; min-width: 18px; padding: 1px 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
 .notice { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 10px 14px; font-size: 14px; margin: 12px 0; }
 .notice.info { background: var(--accent-soft); color: var(--accent); }
@@ -91,8 +94,9 @@ nav.bottom a.on { color: var(--accent); font-weight: 700; }
 nav.bottom a .ico { font-size: 20px; line-height: 1; }
 nav.bottom a .badge { position: absolute; top: 6px; right: calc(50% - 22px); }
 
-.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom)); background: #222; color: #fff; padding: 12px 16px; border-radius: 12px; display: flex; gap: 14px; align-items: center; z-index: 20; box-shadow: 0 6px 24px rgba(0,0,0,.25); max-width: calc(100% - 32px); }
-.toast button { border: 0; background: transparent; color: #8ec5ff; font-weight: 700; cursor: pointer; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom)); background: #222; color: #fff; padding: 12px 16px; border-radius: 12px; display: flex; gap: 14px; align-items: center; z-index: 20; box-shadow: 0 6px 24px rgba(0,0,0,.25); width: max-content; max-width: calc(100% - 32px); }   /* width: left 50% 인 fixed 요소는 그냥 두면 화면 절반 폭까지만 넓어져 긴 문구가 서너 줄로 접힌다 */
+.toast button { border: 0; background: transparent; color: #8ec5ff; font-weight: 700; cursor: pointer; white-space: nowrap; flex: 0 0 auto; }
+@media (min-width: 600px) { .toast { max-width: 560px; } }   /* 넓은 화면에서 긴 문구가 화면 끝에서 끝까지 한 줄로 늘어나지 않게 */
 .progress { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 8px; }
 .progress > i { display: block; height: 100%; background: var(--accent); }
 .empty { text-align: center; color: var(--muted); padding: 32px 0; }
@@ -125,6 +129,12 @@ nav.bottom a .badge { position: absolute; top: 6px; right: calc(50% - 22px); }
 .stack i { display: block; height: 100%; }
 .notice.row { display: flex; }
 .tx .btn.small { flex: 0 0 auto; }
+/* 고정 항목 줄: 폰에서는 이름·설명을 윗줄 전체에, 상태·금액·끄기를 아랫줄에 (한 줄에 다 넣으면 이름이 서너 글자만 보인다). PC 두 열의 좁은 쪽(900~1023px, 반쪽 창)도 열 폭이 폰과 비슷해 같은 배치 */
+@media (max-width: 480px), (min-width: 900px) and (max-width: 1023px) {
+  .tx[data-act="recedit"] { flex-wrap: wrap; row-gap: 6px; }
+  .tx[data-act="recedit"] .main { order: -1; flex: 1 1 100%; }
+  .tx[data-act="recedit"] .amt { margin-left: auto; }
+}
 @media (max-width: 380px) { .donut-wrap { flex-direction: column; align-items: stretch; } .donut { margin: 0 auto; } }
 code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 13px; }
 
@@ -154,7 +164,8 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 1
 .cal-grid .d.cyc { box-shadow: inset 2px 0 0 var(--accent); }
 .sync { color: var(--muted); font-size: 14px; font-weight: 400; display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (min-width: 700px) {
+/* 메뉴를 위로 올리는 것은 PC 레이아웃(900px 이상)에서만. 700~899px(태블릿, 반쪽 창, 폰 가로)은 폰처럼 아래 고정 — 메뉴가 #app 의 마지막 자식이라 sticky 만 주면 페이지 맨 끝으로 밀린다 */
+@media (min-width: 900px) {
   #app { padding-bottom: 24px; }
   nav.bottom { position: sticky; top: 0; bottom: auto; height: 52px; border-top: 0; border-bottom: 1px solid var(--line); max-width: 640px; margin: 0 auto; border-radius: 0 0 14px 14px; }
   nav.bottom a .badge { right: calc(50% - 30px); top: 4px; }
@@ -163,7 +174,9 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 1
 /* v3: 정산·통장·대출·이벤트·예산·카테고리·검색·품목 */
 .row.kv { padding: 6px 0; border-bottom: 1px solid var(--line); gap: 8px; }
 .row.kv:last-child { border-bottom: 0; }
+.row.kv > :last-child:not(:first-child) { white-space: nowrap; flex: 0 0 auto; }   /* 오른쪽 금액·버튼은 줄지 않는다 (왼쪽 글이 길면 그쪽이 줄바꿈). 안 그러면 '원'만 다음 줄로 떨어진다 */
 .grid2 .row.kv { border-bottom: 0; padding: 2px 0; flex-direction: column; align-items: flex-start; gap: 0; }
+.grid2 .row.kv > :last-child { white-space: normal; }   /* 두 칸 표(목표·대출 상세)는 위아래 배치라 값이 길면 줄바꿈한다 */
 .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--line); color: var(--muted); font-weight: 600; vertical-align: 1px; }
 .pill.warn { background: var(--warn-soft); color: var(--warn); }
 .card.tap { cursor: pointer; }
@@ -180,20 +193,28 @@ code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 1
 details.items { margin: 4px 0 12px; }
 details.items summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 8px 0; }
 details.items summary .muted { font-weight: 400; font-size: 13px; }
+details.items > .row { flex-wrap: wrap; }   /* '＋ 품목'·'합계 … 를 금액에' 버튼: 아주 좁은 화면에서는 두 줄로 */
 .itemrow { gap: 6px; margin-top: 6px; }
 .itemrow input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 10px; outline: none; font-size: 14px; }
 .itemrow input:focus { border-color: var(--accent); }
+.itemrow input[data-k="수량"], .itemrow input[data-k="금액"] { flex: 0 1 auto; }   /* 수량·금액은 정해 둔 폭(52px·96px)만, 남는 폭은 품목 이름에 */
+.itemrow input[data-k="품목"] { min-width: 64px; }   /* 아주 좁은 화면에서는 수량·금액이 줄고 품목 칸은 이만큼 남긴다 */
 .itemrow .btn.small { flex: 0 0 auto; padding: 6px 10px; }
+/* .field 밖에 있는 입력 칸(예산의 카테고리별 칸, 통장 기록 수정 줄)도 테마 색을 따른다. 없으면 브라우저 기본 흰 바탕에 어두운 테마의 밝은 글자가 얹혀 안 보인다 */
+#budgetform .row.kv input, #acctxeditform input { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 10px; padding: 8px 10px; outline: none; font-size: 14px; max-width: 100%; }
+#budgetform .row.kv input:focus, #acctxeditform input:focus { border-color: var(--accent); }
+#acctxeditform .btn.small { padding: 8px 10px; font-size: 14px; }   /* 저장·취소를 옆 입력 칸과 같은 높이로 */
 .field .seg { margin-top: 2px; }
 .seg button { white-space: nowrap; }
+.seg.wrap { flex-wrap: wrap; }   /* 버튼이 많은 seg(다른 통장으로 옮기기의 받는 통장): 한 줄에 안 들어가면 다음 줄로. 안 그러면 뒤쪽 버튼이 잘려 고를 수 없다 */
 @media (max-width: 380px) { .seg button { padding: 10px 12px; font-size: 14px; } }
 
 /* PC 레이아웃 (폭 900px 이상): 넓게, 카드 두 열, 글자 크게. 폰은 그대로. */
 @media (min-width: 900px) {
   html, body { font-size: 17px; }
-  #app { max-width: 1120px; padding: 0 24px 40px; display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; align-items: start; }
-  /* 두 열에 걸치는 것: 제목줄, 메뉴, 안내, 목록, 폼, 달력, 검색창, 전환 버튼, 큰 버튼 */
-  #app > header.top, #app > nav.bottom, #app > .notice, #app > .empty, #app > .seg.toggle, #app > .searchbar, #app > .txlist, #app > form, #app > .card.cal, #app > .btn, #app > .sub, #app > details { grid-column: 1 / -1; }
+  #app { max-width: 1120px; padding: 0 24px 40px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 20px; align-items: start; }   /* minmax(0, …): 그냥 1fr 은 줄바꿈 안 하는 긴 거래 줄·표가 열을 밀어 페이지가 가로로 넘친다 */
+  /* 두 열에 걸치는 것: 제목줄, 메뉴, 안내, 목록, 폼, 달력, 검색창, 전환 버튼, 큰 버튼, 입출금 기록 표 */
+  #app > header.top, #app > nav.bottom, #app > .notice, #app > .empty, #app > .seg.toggle, #app > .searchbar, #app > .txlist, #app > form, #app > .card.cal, #app > .btn, #app > .sub, #app > details, #app > .card.acclog { grid-column: 1 / -1; }
   #app > form { max-width: 760px; width: 100%; justify-self: center; }
   #app > .btn.block { max-width: 760px; justify-self: center; }
   header.top h1 { font-size: 24px; }
@@ -265,11 +286,13 @@ details.adv[open] > summary::after { content: '접기 ▴'; }
   .tbl td:nth-child(1) { grid-column: 1; grid-row: 1; font-size: 13px; color: var(--muted); }
   .tbl td:nth-child(2), .tbl td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; font-weight: 700; }
   .tbl td:nth-child(2):empty, .tbl td:nth-child(3):empty { display: none; }
-  .tbl td:nth-child(4) { grid-column: 2; grid-row: 3; text-align: right; font-size: 12px; color: var(--muted); }
+  .tbl td:nth-child(4) { grid-column: 1 / 3; grid-row: 3; text-align: right; font-size: 12px; color: var(--muted); }
   .tbl td:nth-child(4)::before { content: '잔액 '; }
   .tbl td.memo { grid-column: 1 / 3; grid-row: 2; font-size: 13px; min-width: 0; }
   .tbl td.memo:empty { display: none; }
   .tbl td:last-child { grid-column: 3; grid-row: 1 / 4; width: auto; display: flex; flex-direction: column; gap: 4px; }
+  .tbl td:last-child:not([colspan]) { flex-direction: row; gap: 8px; align-items: center; }   /* ✎ ✕ 는 옆으로 나란히 (키운 버튼을 위아래로 쌓으면 줄마다 키가 커진다) */
+  .tbl .btn.small { padding: 8px 10px; font-size: 14px; }   /* 손가락으로 누르기에 28×25px 은 작다 (✎ ✕, 수정 줄의 저장·취소) */
   .tbl td[colspan] { grid-column: 1 / -1; grid-row: 1; }
   .tbl td[colspan] form input[type=date] { width: 100%; }
   .tbl td[colspan] form input[name=금액] { flex: 1; width: auto !important; }
