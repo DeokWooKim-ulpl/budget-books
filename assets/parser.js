@@ -150,8 +150,10 @@ var LedgerParser = (function () {
     s = s.replace(/\([^)]*\)/g, ' ');
     s = s.replace(/\[[^\]]*\]/g, ' ');
     s = s.replace(/(주식회사|\(주\)|㈜|유한회사|\(유\))/g, ' ');
-    s = s.replace(/\s*[가-힣A-Za-z0-9]{1,8}점$/, '');            // "OO점" 지점명
-    s = s.replace(/\s*(본점|직영점|지점)$/, '');
+    s = normalizeSpaces(s);
+    var cut = s.replace(/\s+[가-힣A-Za-z0-9]{1,8}점$/, '');      // "OO점" 지점명: 띄어 쓴 경우만 ("다이소 수원점"). 붙여 쓴 이름("홍콩반점", "편의점")은 가게 이름일 수 있어 그대로 둔다
+    cut = cut.replace(/\s*(본점|직영점|지점)$/, '');
+    if (/[\p{L}\p{N}]/u.test(cut)) s = cut;                      // 다 지워지면("본점") 원래 이름을 쓴다 → 정규화 결과가 빈 글자가 되지 않게
     s = s.replace(/[^\p{L}\p{N}]+/gu, ' ');
     s = normalizeSpaces(s).toLowerCase().replace(/ /g, '');
     return s;
@@ -172,12 +174,22 @@ var LedgerParser = (function () {
         if (bestKey === null || k.length > bestKey.length) bestKey = k;
       }
     }
-    if (bestKey) return { category: dict[bestKey], how: 'fuzzy' };
     rules = rules || [];
+    var rule = null, ruleKw = '';
     for (var j = 0; j < rules.length; j++) {
       var kw = normalizeMerchant(rules[j][0]);
-      if (kw && key.indexOf(kw) >= 0) return { category: rules[j][1], how: 'rule' };
+      if (kw && key.indexOf(kw) >= 0) { rule = rules[j][1]; ruleKw = kw; break; }
     }
+    // 사전의 부분 일치는 규칙보다 먼저 쓰되, 규칙이 더 구체적이면 규칙을 쓴다:
+    // (1) 규칙 키워드가 사전 키보다 길 때 (사전 "쿠팡" + 가맹점 "쿠팡이츠" + 규칙 "쿠팡이츠")
+    // (2) 사전 키가 가맹점보다 긴데 규칙이 그 둘을 다른 가게로 볼 때: 규칙 키워드가 가맹점 이름 전체이고, 사전 키에는 그보다 앞선 다른 규칙이 걸린다 (사전 "쿠팡이츠" + 가맹점 "쿠팡" + 규칙 "쿠팡이츠"·"쿠팡")
+    //     규칙이 둘을 가르지 않으면 사전을 쓴다 (사전 "스타벅스코리아" + 가맹점 "스타벅스", 사전 "이마트트레이더스" + 가맹점 "이마트" + 규칙 "마트")
+    var split = false;
+    if (bestKey && rule && bestKey.length > key.length && ruleKw.length >= key.length) {
+      for (var q = 0; q < rules.length; q++) { var kq = normalizeMerchant(rules[q][0]); if (kq && bestKey.indexOf(kq) >= 0) { split = kq !== ruleKw; break; } }
+    }
+    if (bestKey && !(rule && (ruleKw.length > bestKey.length || split))) return { category: dict[bestKey], how: 'fuzzy' };
+    if (rule) return { category: rule, how: 'rule' };
     return null;
   }
 
@@ -238,8 +250,14 @@ var LedgerParser = (function () {
     rest = rest.replace(/(오전|오후)?\s*\d{1,2}:\d{2}(:\d{2})?/g, ' ');
     rest = rest.replace(/[가-힣]\*+[가-힣]?/g, ' ');                       // 마스킹된 이름 홍*동
     rest = rest.replace(/누적\s*\S*/g, ' ').replace(/잔액\s*\S*/g, ' ');
-    for (var i = 0; i < CARD_ISSUERS.length; i++) {
-      rest = rest.replace(new RegExp(CARD_ISSUERS[i] + '(카드|뱅크|페이)?', 'g'), ' ');
+    // 카드사 이름은 카드사 문구로 쓰였을 때만 지운다: 앞이 문장 시작·공백·기호이고, 뒤가 "카드/체크카드/신용카드/뱅크/페이" 이거나
+    // ("체크"·"신용"이 붙었든 아니든) 한글·영문이 아닌 글자(공백·괄호·숫자·끝) 또는 "승인·결제·출금 …" 같은 알림 낱말일 때.
+    // 가게 이름 안의 같은 글자(롯데리아, 하나로마트, 현대백화점, ABC마트)는 그대로 둔다.
+    // 카드사 이름 둘이 붙은 문구(우리BC카드, NH농협비씨카드, 삼성페이신한카드)는 뒤 이름이 카드사 문구일 때 앞 이름도 지운다 ("농협하나로마트"의 "하나"는 카드사 문구가 아니므로 그대로).
+    // 앞 이름이 지워져야 뒤 이름 앞이 공백이 되는 경우가 있어 두 번 돈다.
+    var tail = '(?:(?:체크|신용)?카드|뱅크|페이|(?:체크|신용)?(?=[^가-힣A-Za-z]|$|승인|결제|출금|입금|사용|이체|취소))';
+    for (var i = 0; i < CARD_ISSUERS.length * 2; i++) {
+      rest = rest.replace(new RegExp('(^|[^가-힣A-Za-z0-9])' + CARD_ISSUERS[i % CARD_ISSUERS.length] + '(?:' + tail + '|(?=(?:' + CARD_ISSUERS.join('|') + ')' + tail + '))', 'g'), '$1 ');
     }
     var words = rest.split(' ').filter(function (w) {
       if (!w) return false;
