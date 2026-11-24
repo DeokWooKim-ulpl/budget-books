@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-18a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-24a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정', '분담'];   // 분담(v3.1, 공동): 반영될 거래의 분담 (빈칸=같이, 이름=그 사람 전액)
@@ -78,7 +78,7 @@ var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
   eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1, accountTxUpdate: 1,
-  groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1 };
+  groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1, tidySheets: 1, archiveStart: 1 };
 
 function handle_(req) {
   CACHE_ = {}; PROPS_ = null;
@@ -130,7 +130,7 @@ function handle_(req) {
         case 'itemsSave': return json_({ ok: true, items: itemsSave_(req.txId, req.items || []) });
         case 'budgetSave': return json_({ ok: true, budget: budgetSave_(req) });
         case 'renameCategory': return json_(Object.assign({ ok: true }, renameCategory_(req.from, req.to), { categories: categoryStats_(), config: publicConfig_() }));
-        case 'migrate': case 'setConfig': case 'updateServer': case 'recurringPurge': return json_(admin_(req));
+        case 'migrate': case 'setConfig': case 'updateServer': case 'recurringPurge': case 'tidySheets': case 'archiveStart': return json_(admin_(req));
       }
     } finally { dataChanged_(); lock.releaseLock(); }   // 쓰기가 끝나면(실패해도) 데이터 버전을 바꿔 저장해 둔 읽기 응답을 버린다 → 바로 다음 bootstrap 은 새로 계산한다
   } catch (err) {
@@ -717,7 +717,9 @@ function summary_(cycle) {
   if (type === 'personal') {
     var bud = budgetFor_(cycle);           // v3: 사이클별 예산이 있으면 그것, 없으면 설정 탭 값
     out.budgetTotal = bud.total;
-    if (bud.total) out.remaining = bud.total - out.expense;
+    // 개인 장부의 예산은 "생활비"(변동 지출)만이다. 집세·보험 같은 고정 지출(출처 '고정')은 예산과 별개라 남은 예산에서 빼지 않는다 (공동 장부는 아래 그대로: 예산 − 전체 지출)
+    out.budgetBasis = 'variable';
+    if (bud.total) out.remaining = bud.total - out.variable;
     out.budgets = bud.byCategory;
   } else {
     if (pc.budgetTotal) out.remaining = pc.budgetTotal - out.expense;
@@ -1189,6 +1191,8 @@ function onOpen() {
     .addItem('이관 다시 하기 (이관 행 지우고 재실행)', 'migrateLegacyAgainMenu')
     .addItem('사전 다시 만들기', 'rebuildDict')
     .addItem('글자 열 서식·사이클 칸 고치기', 'fixCycleColumnMenu')
+    .addItem('시트 정리 (옛 탭 숨기기·서식)', 'tidySheetsMenu')
+    .addItem('숨긴 탭 다시 보이기', 'showAllSheetsMenu')
     .addSeparator()
     .addItem('세이프 박스 탭 → 통장 이관', 'migrateSafeBoxMenu')
     .addItem('대출 상환 표 → 부채 이관', 'migrateLoanMenu')
@@ -2270,6 +2274,8 @@ function admin_(req) {
       return { ok: true, key: key, value: String(req.value === undefined ? '' : req.value), config: publicConfig_() };
     }
     case 'updateServer': return { ok: true, log: updateServer(!!req.force) };
+    case 'tidySheets': return { ok: true, result: tidySheets_(req.mode === 'apply' || req.mode === 'show' ? req.mode : 'plan') };   // 겉모양 정리·옛 탭 숨기기 (값은 안 건드림)
+    case 'archiveStart': return { ok: true, result: archiveStart_(req.mode === 'apply' ? 'apply' : 'plan', req.label) };   // 세부 기록을 보관 탭으로 옮기고 새로 시작
     case 'recurringPurge': {   // 메모가 memoPrefix 로 시작하는 고정 항목을 한 번에 지운다 (잘못된 이관 되돌리기)
       var pre = String(req.memoPrefix || ''); if (!pre) throw new Error('memoPrefix 필요');
       var sh = recSheet_(); var last = sh.getLastRow(); if (last < 2) return { ok: true, deleted: 0 };
@@ -2348,3 +2354,111 @@ function migrateFixedCostsRun_(force) {
   return log;
 }
 function migrateFixedCostsMenu() { menuRun_('고정지출 표 → 고정 항목 이관', function () { return migrateFixedCosts(false); }); }
+
+// ---------------------------------------------------------------- 시트 정리 (겉모양만 — 값은 건드리지 않는다)
+// 앱이 쓰는 탭: 순서·탭 색·머리글·금액/일시 표시 형식·열 너비·줄무늬를 다듬는다. 그 밖의 탭(옛 월별 시트 등): 지우지 않고 숨긴다.
+// 숨긴 탭은 시트 메뉴 "보기 → 숨겨진 시트" 또는 "가계부 앱 → 숨긴 옛 탭 다시 보이기" 로 꺼낸다. 탭 이름은 바꾸지 않는다 (이관 기능이 이름으로 찾는다).
+var TIDY_ORDER_ = [SHEET_TX, SHEET_REC, SHEET_ACC, SHEET_ACCTX, SHEET_DEBT, SHEET_SET, SHEET_EVT, SHEET_ITEM, SHEET_BUD, SHEET_GRP, SHEET_GRPI, SHEET_GRPP, SHEET_CFG, SHEET_DICT];
+var TIDY_COLOR_ = {};
+[[SHEET_TX, '#1b6ef3'], [SHEET_REC, '#1b6ef3'], [SHEET_ACC, '#0f9d58'], [SHEET_ACCTX, '#0f9d58'], [SHEET_DEBT, '#0f9d58'], [SHEET_SET, '#f29900'], [SHEET_EVT, '#f29900'], [SHEET_ITEM, '#f29900'], [SHEET_BUD, '#f29900'],
+  [SHEET_GRP, '#a142f4'], [SHEET_GRPI, '#a142f4'], [SHEET_GRPP, '#a142f4'], [SHEET_CFG, '#9aa0a6'], [SHEET_DICT, '#9aa0a6']].forEach(function (x) { TIDY_COLOR_[x[0]] = x[1]; });
+var TIDY_MONEY_ = { '금액': 1, '원금': 1, '월상환금': 1, '목표금액': 1 };
+var TIDY_TIME_ = { '일시': 1, '등록': 1, '수정': 1 };
+var TIDY_WIDTH_ = { 'id': 90, '일시': 140, '등록': 140, '수정': 140, '사이클': 80, '유형': 60, '금액': 100, '원금': 110, '월상환금': 100, '목표금액': 110, '가맹점': 180, '카테고리': 100, '항목': 200, '결제인': 70, '정산': 50, '계획': 50,
+  '출처': 70, '상태': 70, '원문': 240, '분담': 70, '태그': 100, '이름': 160, '메모': 220, '품목': 200, '수량': 60, '참여자': 200, '보낸사람': 80, '받는사람': 80, '낸사람': 80, '통장': 110, '구분': 60, '거래id': 110, '모임id': 110 };
+function tidyCol_(n) { var s = ''; while (n > 0) { s = String.fromCharCode(65 + (n - 1) % 26) + s; n = Math.floor((n - 1) / 26); } return s; }
+// mode: 'plan'(무엇을 할지만 돌려줌) | 'apply'(정리) | 'show'(숨긴 탭을 모두 다시 보이기)
+function tidySheets_(mode) {
+  var ss = SpreadsheetApp.getActive(), log = { mode: mode, app: [], hide: [], shown: [], errors: [] };
+  var att = function (what, fn) { try { fn(); } catch (e) { log.errors.push(what + ': ' + (e && e.message)); } };
+  var isApp = function (n) { return APP_SHEETS_.indexOf(n) >= 0; };
+  var sheets = ss.getSheets();
+  if (mode === 'show') { sheets.forEach(function (sh) { att('보이기 ' + sh.getName(), function () { if (sh.isSheetHidden()) { sh.showSheet(); log.shown.push(sh.getName()); } }); }); return log; }
+  sheets.forEach(function (sh) { var n = sh.getName(); if (isApp(n)) log.app.push(n); else log.hide.push(n); });
+  if (mode !== 'apply') return log;
+  if (!log.app.length) throw new Error('앱이 쓰는 탭이 없습니다. 먼저 초기 설정을 실행하세요');   // 보이는 탭이 하나도 없게 되면 안 된다
+  // 1) 앱 탭 겉모양
+  TIDY_ORDER_.forEach(function (name) {
+    var sh = ss.getSheetByName(name); if (!sh) return;
+    var nc = Math.max(sh.getLastColumn(), 1);
+    var head = sh.getRange(1, 1, 1, nc).getValues()[0].map(function (v) { return String(v); });
+    att(name + ' 줄무늬', function () { if (!sh.getBandings().length) sh.getRange(1, 1, sh.getMaxRows(), nc).applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, true, false); });
+    att(name + ' 머리글', function () { sh.setFrozenRows(1); sh.getRange(1, 1, 1, nc).setFontWeight('bold').setBackground('#dfe7f7').setFontColor('#1a1d23'); });
+    att(name + ' 탭 색', function () { sh.setTabColor(TIDY_COLOR_[name] || null); });
+    head.forEach(function (h, i) {
+      var a1 = tidyCol_(i + 1) + '2:' + tidyCol_(i + 1);   // 머리글 아래 열 전체. 글자 서식(@)을 건 열(사이클·가맹점·분담 등)은 건드리지 않는다
+      if (TIDY_MONEY_[h]) att(name + ' ' + h + ' 형식', function () { sh.getRange(a1).setNumberFormat('#,##0'); });
+      else if (TIDY_TIME_[h]) att(name + ' ' + h + ' 형식', function () { sh.getRange(a1).setNumberFormat('yyyy-mm-dd hh:mm'); });
+      if (TIDY_WIDTH_[h]) att(name + ' ' + h + ' 너비', function () { sh.setColumnWidth(i + 1, TIDY_WIDTH_[h]); });
+    });
+    if (name === SHEET_CFG) att('설정 너비', function () { sh.setColumnWidth(1, 220); sh.setColumnWidth(2, 420); });
+    if (name === SHEET_DICT) att('사전 너비', function () { sh.setColumnWidth(1, 220); sh.setColumnWidth(2, 120); });
+    att(name + ' 줄바꿈', function () { sh.getRange(1, 1, sh.getMaxRows(), nc).setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP); });   // 긴 원문·메모 때문에 줄 높이가 들쭉날쭉해지지 않게
+  });
+  // 2) 탭 순서: 앱 탭을 앞으로
+  att('탭 순서', function () { var pos = 0; TIDY_ORDER_.forEach(function (name) { var sh = ss.getSheetByName(name); if (!sh) return; pos++; ss.setActiveSheet(sh); ss.moveActiveSheet(pos); }); });
+  // 3) 그 밖의 탭 숨기기
+  ss.getSheets().forEach(function (sh) { var n = sh.getName(); if (isApp(n)) { att('보이기 ' + n, function () { if (sh.isSheetHidden()) sh.showSheet(); }); return; } att('숨기기 ' + n, function () { if (!sh.isSheetHidden()) sh.hideSheet(); }); });
+  att('첫 탭으로', function () { var first = ss.getSheetByName(SHEET_TX); if (first) ss.setActiveSheet(first); });
+  return log;
+}
+function tidySheetsMenu() {
+  var ui = SpreadsheetApp.getUi(); var plan = tidySheets_('plan');
+  if (ui.alert('시트 정리', '앱이 쓰는 탭 ' + plan.app.length + '개의 순서·서식을 다듬고, 나머지 탭 ' + plan.hide.length + '개는 숨깁니다 (지우지 않습니다. "보기 → 숨겨진 시트" 로 다시 꺼낼 수 있습니다).\n\n숨길 탭: ' + (plan.hide.join(', ') || '없음') + '\n\n진행할까요?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  var r = tidySheets_('apply'); dataChanged_();
+  ui.alert('정리했습니다' + (r.errors.length ? '\n\n건너뛴 것 ' + r.errors.length + '개:\n' + r.errors.slice(0, 8).join('\n') : ''));
+}
+function showAllSheetsMenu() { var r = tidySheets_('show'); SpreadsheetApp.getUi().alert(r.shown.length ? '다시 보이게 한 탭: ' + r.shown.join(', ') : '숨긴 탭이 없습니다'); }
+
+// ---------------------------------------------------------------- 새로 시작: 지금까지의 세부 기록을 보관 탭으로 옮기고 앱을 비운다
+// 옮기는 것: 거래 탭에서 고정 항목을 반영한 거래(출처=고정)를 뺀 전부, 그 거래들의 품목, 이벤트. 그대로 두는 것: 출처=고정 거래, 고정·통장·통장거래·부채·정산·예산·설정·사전 탭.
+// 지우지 않는다: "보관 거래 (날짜)" 같은 숨긴 탭에 그대로 옮겨 적는다. 보관 탭에 다 적힌 것을 확인한 뒤에만 원래 탭을 비운다.
+// mode: 'plan'(건수만) | 'apply'. label: 보관 탭 이름에 붙일 날짜 (기본 오늘)
+function archiveStart_(mode, label) {
+  var ss = SpreadsheetApp.getActive();
+  label = String(label || isoLocal_(new Date()).substring(0, 10)).replace(/[^0-9A-Za-z가-힣 _.-]/g, '').substring(0, 20);
+  var out = { mode: mode, label: label, tx: { archived: 0, kept: 0 }, items: { archived: 0, kept: 0 }, events: { archived: 0 }, tabs: [] };
+  var read = function (name, ncols) { var sh = ss.getSheetByName(name); var last = sh ? sh.getLastRow() : 0; return { sh: sh, last: last, rng: last >= 2 ? sh.getRange(2, 1, last - 1, ncols) : null }; };
+  var blank = function (row) { return row.every(function (v) { return v === '' || v === null; }); };
+  // 보관 탭에 덧붙여 적고, 적힌 줄 수를 확인한다
+  var stash = function (name, cols, rows, fmt) {
+    if (!rows.length) return;
+    var tab = '보관 ' + name + ' (' + label + ')';
+    var sh = ss.getSheetByName(tab) || ss.insertSheet(tab);
+    var at = sh.getLastRow();
+    if (at < 1) { sh.getRange(1, 1, 1, cols.length).setValues([cols]); try { sh.setFrozenRows(1); sh.getRange(1, 1, 1, cols.length).setFontWeight('bold'); } catch (e) { } at = 1; }
+    var need = at + rows.length - sh.getMaxRows(); if (need > 0) sh.insertRowsAfter(sh.getMaxRows(), need);   // 새 탭은 1,000줄뿐이다
+    if (fmt) fmt(sh, at + 1, rows.length);
+    sh.getRange(at + 1, 1, rows.length, cols.length).setValues(rows);
+    SpreadsheetApp.flush();
+    if (sh.getLastRow() < at + rows.length) throw new Error('보관 탭 "' + tab + '" 에 다 적히지 않았습니다. 원래 기록은 그대로 두었습니다');
+    try { sh.hideSheet(); } catch (e) { }
+    out.tabs.push(tab);
+  };
+  // 1) 거래
+  var t = read(SHEET_TX, COLS.length), keepIds = {};
+  var tv = t.rng ? textRows_(t.rng.getValues(), t.rng.getDisplayValues(), TX_TEXT_RANGES_, COL) : [];
+  var keepTx = [], goneTx = [];
+  tv.forEach(function (row) { if (blank(row)) return; if (row[0] !== '' && String(row[COL['출처']]) === '고정') { keepTx.push(row); keepIds[String(row[0])] = true; } else goneTx.push(row); });
+  out.tx.archived = goneTx.length; out.tx.kept = keepTx.length;
+  // 2) 품목: 남는 거래의 품목만 남긴다
+  var it = read(SHEET_ITEM, ICOLS.length), tc = ICOLS.indexOf('거래id');
+  var iv = it.rng ? it.rng.getValues() : [], keepIt = [], goneIt = [];
+  iv.forEach(function (row) { if (blank(row)) return; (keepIds[String(row[tc])] ? keepIt : goneIt).push(row); });
+  out.items.archived = goneIt.length; out.items.kept = keepIt.length;
+  // 3) 이벤트: 태그를 달 거래가 없어지므로 함께 보관한다
+  var ev = read(SHEET_EVT, ECOLS.length);
+  var evv = ev.rng ? ev.rng.getValues().filter(function (row) { return !blank(row); }) : [];
+  out.events.archived = evv.length;
+  if (mode !== 'apply') return out;
+  // 먼저 전부 보관 탭에 적는다 (하나라도 실패하면 여기서 멈추고 원래 탭은 손대지 않은 상태)
+  stash('거래', COLS, goneTx, function (sh, r, n) { textFormat_(sh, TX_TEXT_RANGES_, COL, r, n); });
+  stash('품목', ICOLS, goneIt, null);
+  stash('이벤트', ECOLS, evv, null);
+  // 그다음 원래 탭을 비우고 남길 줄만 다시 쓴다
+  if (goneTx.length) { t.rng.clearContent(); if (keepTx.length) { textFormat_(t.sh, TX_TEXT_RANGES_, COL, 2, keepTx.length); t.sh.getRange(2, 1, keepTx.length, COLS.length).setValues(keepTx); } }
+  if (goneIt.length) { it.rng.clearContent(); if (keepIt.length) it.sh.getRange(2, 1, keepIt.length, ICOLS.length).setValues(keepIt); }
+  if (evv.length) ev.rng.clearContent();
+  CACHE_ = {};
+  return out;
+}

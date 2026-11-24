@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-18a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-24a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -159,7 +159,7 @@
         out.unsettledAllByPayer = un;
         out.balance = balance(); out.settlementAll = out.balance.remaining;
       }
-      if (c.ledgerType === 'personal') { var bud = budgetFor(cycle); out.budgetTotal = bud.total; if (bud.total) out.remaining = bud.total - out.expense; out.budgets = bud.byCategory; }
+      if (c.ledgerType === 'personal') { var bud = budgetFor(cycle); out.budgetTotal = bud.total; out.budgetBasis = 'variable'; if (bud.total) out.remaining = bud.total - budgetSpent(out, true); out.budgets = bud.byCategory; }   // 개인: 예산은 생활비(변동 지출)만
       else if (c.budgetTotal) out.remaining = c.budgetTotal - out.expense;
       return out;
     }
@@ -276,6 +276,15 @@
   }
   function dayLabel(k, withYear) { var d = new Date(k + 'T00:00:00'); var w = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()]; return (withYear ? d.getFullYear() + '년 ' : '') + (d.getMonth() + 1) + '월 ' + d.getDate() + '일 (' + w + ')'; }   // withYear: 여러 해가 섞이는 목록(전체 기간)에서 연도까지
   function isShared() { return state.config && state.config.ledgerType === 'shared'; }
+  // 예산에서 빼는 지출. 개인 장부의 예산은 "생활비"만이라 변동 지출(전체 지출 − 고정 항목에서 반영한 거래, 출처 '고정')만 뺀다: 집세·보험 같은 고정 지출은 예산과 별개다.
+  // 공동 장부는 전체 지출 그대로. 남은 예산은 어디서나(서버 응답을 받은 직후 applyBootstrap, 저장 직후 bumpSummary, 체험 모드 summary) 예산 − 이 값이다 — 옛 서버는 전체 지출을 뺀 값을 주므로 서버 값을 그대로 쓰지 않는다.
+  function budgetSpent(s, personal) { var e = Number(s.expense) || 0; return personal ? e - (Number(s.fixed) || 0) : e; }
+  // 최근 3사이클(이 사이클 바로 앞 셋)의 평균 변동 지출. 요약의 추이(trend, 6사이클)에서 고정을 빼고 구한다 (서버 budgetSuggest_ 의 avgExpense 와 같은 사이클·같은 나눗수). 추이가 없으면 null
+  function avgVariable3() {
+    var tr = (state.summary && state.summary.trend) || []; if (tr.length < 4) return null;
+    var t3 = tr.slice(-4, -1); var n = t3.filter(function (t) { return t.count; }).length || 1;
+    return Math.round(t3.reduce(function (a, t) { return a + (t.expense || 0) - (t.fixed || 0); }, 0) / n);
+  }
   function cycWord() { return state.cycle === todayCycle() ? '이번 사이클' : '이 사이클'; }   // 머리글의 ‹ › 로 지난(다음) 사이클을 보고 있을 때는 '이번'이라고 하지 않는다
   function me() { return settings.me || (state.config && state.config.members[0]) || ''; }
   function toast(msg, action, onAction, ms) {
@@ -382,6 +391,8 @@
     state.cycle = j.cycle || state.cycle || j.config.currentCycle; state.shown = state.cycle;
     if (!liveCycle) liveCycle = todayCycle();
     state.rows = j.rows; state.summary = j.summary; state.dict = j.dict; state.merchants = j.merchants;
+    // 개인 장부의 남은 예산은 앱이 다시 계산한다: 예산 − 변동 지출 (budgetSpent). 서버가 옛 버전이면 전체 지출을 뺀 값이 온다
+    var s0 = state.summary; if (s0 && !isShared() && s0.remaining != null) { var bt0 = s0.budgetTotal || j.config.budgetTotal; if (bt0) s0.remaining = bt0 - budgetSpent(s0, true); }
     state.recurring = j.recurring || []; state.due = j.recurringDue || [];
     state.oldBackend = (j.recurring === undefined);   // 옛 Code.gs 는 recurring 을 모른다
     // v3
@@ -523,7 +534,7 @@
     if (!isShared()) { if (o['계획'] === 'Y') s.planned = (s.planned || 0) + amt; else s.unplanned = (s.unplanned || 0) + amt; }
     if (o['출처'] === '고정') s.fixed = (s.fixed || 0) + amt;
     s.variable = s.expense - (s.fixed || 0);
-    var bt = s.budgetTotal || cfg.budgetTotal; if (bt) s.remaining = bt - s.expense;
+    var bt = s.budgetTotal || cfg.budgetTotal; if (bt) s.remaining = bt - budgetSpent(s, !isShared());
     bumpBalance(o, sign);
   }
 
@@ -703,13 +714,13 @@
     } else {
       var bt = s.budgetTotal || state.config.budgetTotal;
       if (s.remaining != null && bt) {
-        var pct = Math.min(100, Math.round(s.expense / bt * 100)); var da = dailyAllowance();
-        h += '<div class="sub" style="margin-top:6px">예산 ' + won(bt) + (state.budget && state.budget.isOverride ? ' <span class="muted">(이 사이클)</span>' : '') + ' 중 <b class="' + (s.remaining < 0 ? 'danger' : 'ok') + '">' + (s.remaining < 0 ? '초과 ' : '남음 ') + won(Math.abs(s.remaining)) + '</b>' + (hasV3() ? ' · <a href="#budget">예산 수정</a>' : '') + '</div><div class="bar"><i class="' + (s.remaining < 0 ? 'over' : '') + '" style="width:' + pct + '%"></i></div>';
+        var pct = Math.max(0, Math.min(100, Math.round(budgetSpent(s, true) / bt * 100))); var da = dailyAllowance();   // 막대도 예산에서 빠지는 지출(변동)만
+        h += '<div class="sub" style="margin-top:6px">생활비 예산 ' + won(bt) + (state.budget && state.budget.isOverride ? ' <span class="muted">(이 사이클)</span>' : '') + ' 중 <b class="' + (s.remaining < 0 ? 'danger' : 'ok') + '">' + (s.remaining < 0 ? '초과 ' : '남음 ') + won(Math.abs(s.remaining)) + '</b>' + (hasV3() ? ' · <a href="#budget">예산 수정</a>' : '') + '</div><div class="bar"><i class="' + (s.remaining < 0 ? 'over' : '') + '" style="width:' + pct + '%"></i></div>';
         if (da && s.remaining > 0) h += '<div class="sub" style="margin-top:6px">오늘부터 ' + da.daysLeft + '일 동안 <b>하루 ' + won(da.perDay) + '</b>씩 쓸 수 있습니다</div>';
       } else if (hasV3()) h += '<div class="sub" style="margin-top:6px"><a href="#budget">예산 정하기 →</a></div>';
       h += '<div class="grid2" style="margin-top:14px"><div><div class="sub">계획</div><b>' + won(s.planned) + '</b></div><div><div class="sub">비계획</div><b>' + won(s.unplanned) + '</b></div></div>';
     }
-    if (s.fixed) h += '<div class="sub" style="margin-top:10px">고정 ' + won(s.fixed) + ' · 변동 ' + won(s.variable) + '</div>';
+    if (s.fixed) h += '<div class="sub" style="margin-top:10px">고정 ' + won(s.fixed) + ' · 변동 ' + won(s.variable) + (!isShared() && s.remaining != null ? ' <span class="muted">(고정 지출은 예산에 넣지 않습니다)</span>' : '') + '</div>';
     if (s.income) h += '<div class="sub" style="margin-top:6px">수입 <b class="ok">' + won(s.income) + '</b>' + (s.income > s.expense ? ' · 남는 돈 <b class="ok">' + won(s.income - s.expense) + '</b>' : '') + '</div>';
     h += '<div style="margin-top:10px"><a href="#stats" class="sub">그래프로 보기 →</a> <span class="sub">·</span> <a href="#cal" class="sub">달력으로 보기 →</a></div>';
     h += '</div>';
@@ -1112,9 +1123,13 @@
     var b = state.budget || { total: state.config.budgetTotal, byCategory: {}, isOverride: false, overrides: {} };
     var sg = state.budgetSuggest; var s = state.summary || {};
     var h = '<form id="budgetform" class="card"><h2>' + esc(state.cycle) + ' 사이클 예산 <span class="muted">(' + esc(cycleLabel(state.cycle)) + ')</span></h2>';
-    h += '<div class="field"><label>총 예산' + (b.isOverride ? ' <span class="muted">(이 사이클만)</span>' : ' <span class="muted">(기본값 ' + won(state.config.budgetTotal || 0) + ')</span>') + '</label><input class="amount-input" name="total" type="text" inputmode="numeric" value="' + esc(b.total ? Number(b.total).toLocaleString('ko-KR') : '') + '" placeholder="비우면 기본값"></div>';
-    // 제안값은 고정 수입 그대로다. 예산은 고정 지출까지 포함한 전체 지출 한도(남음 = 예산 − 전체 지출)라서, 고정 지출을 미리 뺀 금액을 넣으면 고정 항목을 반영할 때 한 번 더 빠진다
-    if (sg) h += '<div class="sub" style="margin:-4px 0 10px">제안: 고정 수입 <b>' + won(sg.fixedIncome) + '</b>' + (sg.fixedIncome > 0 && sg.fixedExpense > 0 ? ' <span class="muted">(' + (sg.free >= 0 ? '여기서 고정 지출 ' + won(sg.fixedExpense) + '이 나가면 ' + won(sg.free) + ' 남음' : '고정 지출 ' + won(sg.fixedExpense) + '이 더 많아 ' + won(-sg.free) + ' 모자람') + ')</span>' : '') + ' · 최근 3사이클 평균 지출 <b>' + won(sg.avgExpense) + '</b> ' + (sg.fixedIncome > 0 ? '<button type="button" class="btn small" data-act="budgetuse" data-v="' + sg.fixedIncome + '">제안값 넣기</button>' : '') + '</div>';
+    h += '<div class="field"><label>생활비 예산 <span class="muted">(고정 지출 제외 · ' + (b.isOverride ? '이 사이클만' : '기본값 ' + won(state.config.budgetTotal || 0)) + ')</span></label><input class="amount-input" name="total" type="text" inputmode="numeric" value="' + esc(b.total ? Number(b.total).toLocaleString('ko-KR') : '') + '" placeholder="비우면 기본값"></div>';
+    // 제안값 = 고정 수입 − 고정 지출 (sg.free). 예산은 생활비(변동 지출)만이고 고정 지출은 예산에서 빠지지 않으므로, 고정 지출을 내고 남는 돈이 곧 생활비로 쓸 수 있는 돈이다. 0 이하면 넣을 값이 없다
+    if (sg) {
+      var both = sg.fixedIncome > 0 && sg.fixedExpense > 0, av = avgVariable3();
+      h += '<div class="sub" style="margin:-4px 0 10px">제안: ' + (both ? '고정 수입 ' + won(sg.fixedIncome) + ' − 고정 지출 ' + won(sg.fixedExpense) + ' = <b' + (sg.free > 0 ? '' : ' class="danger"') + '>' + won(sg.free) + '</b>' + (sg.free > 0 ? '' : ' <span class="muted">(고정 지출이 더 많아 제안값이 없습니다)</span>') : '고정 수입 <b>' + won(sg.fixedIncome) + '</b>') +
+        (av != null ? ' · 최근 3사이클 평균 변동 지출 <b>' + won(av) + '</b> ' : ' · 최근 3사이클 평균 지출 <b>' + won(sg.avgExpense) + '</b> ') + (sg.fixedIncome > 0 && sg.free > 0 ? '<button type="button" class="btn small" data-act="budgetuse" data-v="' + sg.free + '">제안값 넣기</button>' : '') + '</div>';
+    }
     h += '<h2 style="margin-top:14px">카테고리별 예산 <span class="muted">(비우면 없음)</span></h2>';
     var cats = state.config.categories.slice(); Object.keys(b.byCategory).forEach(function (c) { if (cats.indexOf(c) < 0) cats.push(c); });
     h += cats.map(function (c) { var v = b.byCategory[c]; var spent = (s.byCategory || {})[c] || 0; return '<div class="row kv"><span>' + esc(c) + ' <span class="sub">쓴 돈 ' + won(spent) + '</span></span><input name="cat:' + esc(c) + '" type="text" inputmode="numeric" value="' + esc(v ? Number(v).toLocaleString('ko-KR') : '') + '" placeholder="0" style="width:120px;text-align:right"></div>'; }).join('');
@@ -1182,7 +1197,7 @@
     var c = state.config;
     var th = settings.theme || 'light';
     var h = '<div class="card"><h2>화면</h2><div class="row"><span>밝기</span><div class="seg" id="theme-seg">' + [['light', '밝게'], ['dark', '어둡게'], ['auto', '자동']].map(function (o) { return '<button type="button" class="' + (th === o[0] ? 'on' : '') + '" data-act="theme" data-v="' + o[0] + '">' + o[1] + '</button>'; }).join('') + '</div></div><div class="sub" style="margin-top:6px">자동은 휴대폰의 다크 모드 설정을 따릅니다.</div></div>';
-    if (hasV3()) h += '<div class="card"><h2>관리</h2><div class="linklist">' + (isShared() ? '<a href="#settle">정산 기록 <span class="muted">누가 누구에게, 일부 정산</span></a>' : '<a href="#budget">예산 <span class="muted">이번 사이클 총액·카테고리별</span></a>') + '<a href="#accounts">' + (isShared() ? '통장 <span class="muted">공금·비상금 잔액과 입출금</span>' : '목돈 <span class="muted">저축 목표·진행률·입출금</span>') + '</a><a href="#debts">대출 <span class="muted">남은 원금·납입 진행</span></a><a href="#events">이벤트 <span class="muted">여행처럼 묶어서 보기</span></a><a href="#groups">모임 정산 <span class="muted">회식·학회 n명 나눠 내기</span></a><a href="#categories">카테고리 정리 <span class="muted">이름 바꾸기·합치기</span></a><a href="#recurring">고정 항목 <span class="muted">월세·월급</span></a></div></div>';
+    if (hasV3()) h += '<div class="card"><h2>관리</h2><div class="linklist">' + (isShared() ? '<a href="#settle">정산 기록 <span class="muted">누가 누구에게, 일부 정산</span></a>' : '<a href="#budget">예산 <span class="muted">이번 사이클 생활비 예산·카테고리별</span></a>') + '<a href="#accounts">' + (isShared() ? '통장 <span class="muted">공금·비상금 잔액과 입출금</span>' : '목돈 <span class="muted">저축 목표·진행률·입출금</span>') + '</a><a href="#debts">대출 <span class="muted">남은 원금·납입 진행</span></a><a href="#events">이벤트 <span class="muted">여행처럼 묶어서 보기</span></a><a href="#groups">모임 정산 <span class="muted">회식·학회 n명 나눠 내기</span></a><a href="#categories">카테고리 정리 <span class="muted">이름 바꾸기·합치기</span></a><a href="#recurring">고정 항목 <span class="muted">월세·월급</span></a></div></div>';
     h += '<details class="card adv"><summary><h2 style="display:inline">고급 설정 <span class="muted">연결 주소·PIN·설치 링크·자동 수집</span></h2></summary>';
     h += '<div style="margin-top:12px"><h2>연결</h2>';
     h += '<div class="field"><label>Apps Script 웹앱 URL</label><input id="s-endpoint" type="url" value="' + esc(settings.endpoint || '') + '" placeholder="https://script.google.com/macros/s/…/exec"></div>';
@@ -1228,14 +1243,15 @@
     return h + '</svg><div class="legend"><span><i style="background:var(--accent)"></i>지출</span><span><i style="background:var(--ok)"></i>수입</span></div>';
   }
 
-  function chartCumulative(rows, cycle, budget) {
+  // living (개인 장부): 고정 지출(출처 '고정')은 선·하루 평균·예측에 넣지 않고 합계만 따로 적는다 — 예산이 생활비(변동 지출)만이기 때문. 공동 장부(living 없음)는 전과 같다
+  function chartCumulative(rows, cycle, budget, living) {
     var r = LedgerParser.cycleRange(cycle, state.config.cycleStartDay);
     var days = Math.round((r.end.getTime() - r.start.getTime()) / 86400000);
     var daily = [], fx = []; for (var i = 0; i < days; i++) { daily.push(0); fx.push(0); }   // fx: 그날의 고정 지출(출처 '고정')
     rows.forEach(function (o) {
       if (o['유형'] === '수입' || o['상태'] === '취소' || o['사이클'] !== cycle) return;
       var d = Math.floor((new Date(String(o['일시']).substring(0, 10) + 'T00:00:00').getTime() - r.start.getTime()) / 86400000);
-      if (d >= 0 && d < days) { daily[d] += o['금액']; if (o['출처'] === '고정') fx[d] += o['금액']; }
+      if (d >= 0 && d < days) { var isFx = o['출처'] === '고정'; if (isFx) fx[d] += o['금액']; if (!(isFx && living)) daily[d] += o['금액']; }
     });
     var cum = [], acc = 0; daily.forEach(function (v) { acc += v; cum.push(acc); });
     var today = Math.floor((new Date(dayKey(nowIso()) + 'T00:00:00').getTime() - r.start.getTime()) / 86400000);   // 오늘은 기기 현지 날짜 (toISOString 은 UTC 라 한국 0~9시에 하루 전이 된다)
@@ -1247,7 +1263,7 @@
     function y(v) { return T + (H - T - B) * (1 - v / max); }
     var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart">';
     [0.25, 0.5, 0.75, 1].forEach(function (f) { h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(max * f) + '" y2="' + y(max * f) + '" class="grid"/>'; });
-    if (budget) h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(budget) + '" y2="' + y(budget) + '" class="budget"/><text x="' + (W - R) + '" y="' + (y(budget) - 4) + '" class="lbl" text-anchor="end">예산 ' + short(budget) + '</text>';
+    if (budget) h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(budget) + '" y2="' + y(budget) + '" class="budget"/><text x="' + (W - R) + '" y="' + (y(budget) - 4) + '" class="lbl" text-anchor="end">' + (living ? '생활비 예산 ' : '예산 ') + short(budget) + '</text>';
     var pts = []; for (var k = 0; k <= upto; k++) pts.push(x(k).toFixed(1) + ',' + y(cum[k]).toFixed(1));
     if (pts.length > 1) h += '<polygon points="' + x(0).toFixed(1) + ',' + y(0).toFixed(1) + ' ' + pts.join(' ') + ' ' + x(upto).toFixed(1) + ',' + y(0).toFixed(1) + '" class="area"/>';
     h += '<polyline points="' + pts.join(' ') + '" class="line"/>';
@@ -1258,6 +1274,11 @@
     var spent = cum[upto] || 0, elapsed = upto + 1;
     // 예측: 월세 같은 고정 지출은 한 달에 한 번이라 하루 속도에 넣지 않는다. 이 사이클 고정 합계(아직 안 온 날짜 것 포함)는 그대로 더하고 변동 지출만 속도로 늘린다
     var fixedAll = 0, fixedDone = 0; fx.forEach(function (v, i) { fixedAll += v; if (i <= upto) fixedDone += v; });
+    if (living) {   // 선에 고정이 없으므로 쓴 돈이 곧 변동 지출이고, 예측에도 고정을 더하지 않는다 (예산과 같은 기준)
+      var avgL = spent / elapsed, projL = Math.round(avgL * days);
+      var capL = isCur ? '오늘까지 ' + elapsed + '일 동안 ' + won(spent) + ' · 하루 평균 ' + won(Math.round(avgL)) + ' · 이 속도면 사이클 끝에 약 <b>' + won(projL) + '</b>' + (budget ? (projL > budget ? ' <span class="danger">(예산 초과 예상)</span>' : ' <span class="ok">(예산 안)</span>') : '') : '사이클 합계 ' + won(acc) + ' · 하루 평균 ' + won(Math.round(acc / days));
+      return h + '<div class="sub" style="margin-top:6px">' + capL + (fixedAll ? ' <span class="muted">· 고정 지출 ' + won(fixedAll) + '은 여기에 넣지 않았습니다</span>' : '') + '</div>';
+    }
     var avg = (spent - fixedDone) / elapsed, proj = Math.round(fixedAll + avg * days);
     var cap = isCur ? '오늘까지 ' + elapsed + '일 동안 ' + won(spent) + (fixedAll ? ' · 변동 하루 평균 ' : ' · 하루 평균 ') + won(Math.round(avg)) + ' · 이 속도면 ' + (fixedAll ? '고정 ' + won(fixedAll) + '을 더해 ' : '') + '사이클 끝에 약 <b>' + won(proj) + '</b>' + (budget ? (proj > budget ? ' <span class="danger">(예산 초과 예상)</span>' : ' <span class="ok">(예산 안)</span>') : '') : '사이클 합계 ' + won(acc) + ' · 하루 평균 ' + won(Math.round(acc / days));
     return h + '<div class="sub" style="margin-top:6px">' + cap + '</div>';
@@ -1297,7 +1318,8 @@
     h += '<div class="card"><h2>최근 ' + trend.length + '개 사이클 지출 · 수입</h2>' + (trend.length ? chartBars(trend) : '<div class="empty">데이터가 없습니다</div>');
     if (trend.length >= 2) { var prev = trend[trend.length - 2], curT = trend[trend.length - 1]; var diff = curT.expense - prev.expense; if (prev.expense) h += '<div class="sub" style="margin-top:6px">지난 사이클보다 <b class="' + (diff > 0 ? 'danger' : 'ok') + '">' + (diff > 0 ? '+' : '') + won(diff) + '</b> (' + (diff > 0 ? '+' : '') + Math.round(diff / prev.expense * 100) + '%)</div>'; }
     h += '</div>';
-    h += '<div class="card"><h2>' + cycWord() + ' 누적 지출</h2>' + chartCumulative(state.rows, state.cycle, isShared() ? null : (s.budgetTotal || state.config.budgetTotal)) + '</div>';   // 예산은 홈과 같은 값: 이 사이클에 저장한 예산이 있으면 그것, 없으면 기본 예산
+    var living = !isShared();   // 개인 장부: 예산이 생활비(변동 지출)만이라 누적 그래프·예측도 고정 지출을 빼고 예산과 비교한다
+    h += '<div class="card"><h2>' + cycWord() + (living ? ' 생활비 누적 지출 <span class="muted">(고정 지출 제외)</span>' : ' 누적 지출') + '</h2>' + chartCumulative(state.rows, state.cycle, isShared() ? null : (s.budgetTotal || state.config.budgetTotal), living) + '</div>';   // 예산은 홈과 같은 값: 이 사이클에 저장한 예산이 있으면 그것, 없으면 기본 예산
     h += '<div class="card"><h2>카테고리 비율</h2>' + chartDonut(s.byCategory, s.expense) + '</div>';
     if (isShared()) {
       var payers = Object.keys(s.byPayer).map(function (k) { return { k: k, v: s.byPayer[k] }; });
