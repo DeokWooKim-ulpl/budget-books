@@ -297,3 +297,54 @@ details.adv[open] > summary::after { content: '접기 ▴'; }
   .tbl td[colspan] form input[type=date] { width: 100%; }
   .tbl td[colspan] form input[name=금액] { flex: 1; width: auto !important; }
 }
+
+/* 묶음(공용 / 구성원 개인 / 고정·생활비): 홈 카테고리 카드, 고정 항목, 반영 화면 */
+.grp { border: 1px dashed transparent; border-radius: 12px; margin: 0 -9px; padding: 0 8px 4px; }
+.grp + .grp { margin-top: 12px; }
+.grp-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 0 6px; margin-bottom: 4px; border-bottom: 2px solid var(--line); }
+.grp-h b { font-size: 15px; }
+.grp-h label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.grp-h > :last-child:not(:first-child) { flex: 0 0 auto; white-space: nowrap; font-weight: 700; }
+.grp-h > .sub:last-child { font-weight: 400; }
+.grp-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.grp-row:last-child { border-bottom: 0; }
+.grp-row .nm { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.grp-row .amt { flex: 0 1 auto; text-align: right; }
+.grp-row .amt b { white-space: nowrap; }
+.grp-row .amt .sub { white-space: nowrap; display: inline-block; }
+.grp-empty { color: var(--muted); font-size: 14px; padding: 10px 0 8px; }
+.grp-tip { margin-top: 10px; font-size: 13px; }
+.grp .tx:last-child { margin-bottom: 4px; }
+/* 손잡이(≡): 누른 채 끌어 다른 묶음으로. touch-action: none 이라 여기서 시작한 손가락 움직임은 화면을 스크롤하지 않는다 (나머지 줄은 평소처럼 스크롤) */
+.grip { flex: 0 0 auto; width: 40px; height: 36px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); background: var(--bg); color: var(--muted); border-radius: 9px; font-size: 18px; line-height: 1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.grip:active { background: var(--accent-soft); color: var(--accent); }
+.grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+html.dragging, html.dragging * { user-select: none; -webkit-user-select: none; cursor: grabbing !important; }
+.grp.drop-ok { border-color: var(--accent); }
+.grp.drop-on { border-style: solid; background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+.drag-src { opacity: .35; }
+.drag-ghost { position: fixed; z-index: 40; margin: 0; pointer-events: none; background: var(--card); color: var(--text); border: 1px solid var(--accent); border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.28); opacity: .96; }
+.grp-row.drag-ghost { padding: 5px 10px; }
+/* 옮기기 확인 창 (화면 아래에서 올라온다) */
+.sheet-back { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 30; background: rgba(0,0,0,.45); }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 31; max-width: 640px; margin: 0 auto; max-height: 88vh; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0; padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow: 0 -10px 32px rgba(0,0,0,.3); }
+.sheet h2 { margin: 0 0 10px; font-size: 18px; }
+.sheet-what { font-size: 16px; overflow-wrap: anywhere; }
+.sheet-from { margin-top: 4px; color: var(--muted); }
+.sheet-from b { color: var(--text); }
+.sheet-notes { margin: 10px 0 4px; padding-left: 18px; color: var(--muted); font-size: 14px; }
+.sheet-notes li + li { margin-top: 4px; }
+.sheet .btn.block { margin-top: 8px; }
+.sheet .sheet-cancel { border-color: transparent; color: var(--muted); }
+/* 사람별 표 (고정 항목 화면의 '매달 남는 돈') */
+.ptable-wrap { overflow-x: auto; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.ptable th, .ptable td { padding: 7px 0 7px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; font-weight: 400; }
+.ptable th:first-child { text-align: left; padding-left: 0; color: var(--muted); }
+.ptable thead th { font-weight: 700; color: var(--text); }
+.ptable tr.total th, .ptable tr.total td { font-weight: 700; color: var(--text); border-bottom: 0; }
+.ptable tr.total td.danger { color: var(--danger); }
+/* 반영 화면의 줄: 이름이 길면 설명(카테고리·낸 사람·날짜)을 다음 줄로 내린다 (한 줄에 끼우면 이름이 두세 글자씩 쪼개진다) */
+.recapply-row label.row { flex-wrap: wrap; row-gap: 0; }
+.recapply-row label.row b { overflow-wrap: anywhere; }
+.grp .recapply-row:first-of-type { padding-top: 6px; }

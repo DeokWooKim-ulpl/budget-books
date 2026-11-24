@@ -19,7 +19,7 @@ var SHEET_CFG = '설정';
 var SHEET_DICT = '사전';
 var SHEET_REC = '고정';
 var API_VERSION = 3;   // 요청 처리(handle_/read_/응답 모양)가 바뀌면 1 올린다. 앱이 옛 서버를 감지해 안내하는 데 쓴다.
-var SERVER_BUILD = '2026-11-24a';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
+var SERVER_BUILD = '2026-11-24b';   // 코드를 고칠 때마다 올린다. 자동 업데이트가 GitHub 와 비교할 때 쓰고 doGet 응답에도 보인다.
 
 // 고정 탭 열. 일 = 매달 며칠에 나가는지(1~31). 계획 = 개인 장부에서 계획 지출로 넣을지(Y/N). 활성 = N 이면 반영하지 않음.
 var RCOLS = ['id', '유형', '이름', '금액', '카테고리', '결제인', '일', '계획', '활성', '메모', '등록', '수정', '분담'];   // 분담(v3.1, 공동): 반영될 거래의 분담 (빈칸=같이, 이름=그 사람 전액)
@@ -78,7 +78,7 @@ var CACHE_ = {};
 var WRITE_ACTIONS_ = { add: 1, update: 1, delete: 1, confirm: 1, settle: 1, ingest: 1, recurringSave: 1, recurringDelete: 1, applyRecurring: 1,
   settlePay: 1, settleFinish: 1, settleDelete: 1, accountSave: 1, accountDelete: 1, accountTxAdd: 1, accountTxDelete: 1, debtSave: 1, debtDelete: 1,
   eventSave: 1, eventDelete: 1, itemsSave: 1, budgetSave: 1, renameCategory: 1, migrate: 1, setConfig: 1, updateServer: 1, recurringPurge: 1, accountTransfer: 1, accountTxUpdate: 1,
-  groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1, tidySheets: 1, archiveStart: 1 };
+  groupSave: 1, groupDelete: 1, groupItemSave: 1, groupItemDelete: 1, groupPaySave: 1, groupPayDelete: 1, tidySheets: 1, archiveStart: 1, shareMove: 1 };
 
 function handle_(req) {
   CACHE_ = {}; PROPS_ = null;
@@ -107,6 +107,7 @@ function handle_(req) {
         case 'recurringSave': return json_({ ok: true, item: saveRecurring_(req.item || {}), recurring: readRecurring_() });
         case 'recurringDelete': return json_({ ok: true, deleted: deleteRecurring_(req.id), recurring: readRecurring_() });
         case 'applyRecurring': { var ap = applyRecurring_(req.cycle || currentCycle_(), req.ids, req.amounts, req.updateDefault); return json_({ ok: true, added: ap.length, rows: ap }); }
+        case 'shareMove': return json_(Object.assign({ ok: true }, shareMove_(req)));
         // ---- v3
         case 'settlePay': return json_(Object.assign({ ok: true }, settlePay_(req)));
         case 'settleFinish': return json_(Object.assign({ ok: true }, settleFinish_(req)));
@@ -845,6 +846,49 @@ function applyRecurring_(cycle, ids, amounts, updateDefault) {
       '항목': r['메모'], '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': recurringKey_(r.id), '분담': r['분담'] || ''
     });
   });
+}
+
+// 묶음 옮기기 (공동): 앱의 홈·고정 항목 화면에서 줄을 다른 묶음(공용 / 구성원 개인)으로 끌어 옮길 때 부른다. 요청 하나로 거래 여러 건과 고정 항목 여러 건을 같이 바꾼다 (요청마다 3~5초라 건마다 부르지 않게).
+// req: { txIds: [거래 id], recIds: [고정 항목 id], share: '' | 구성원 이름, payer: 구성원 이름(선택) }
+//   share — 빈칸 = 공용(설정 비율로 나눠 부담), 이름 = 그 사람 개인(전액 부담). 지출 줄의 분담 칸만 바꾼다 (수입에는 분담이 없다). share 를 보내지 않으면 분담은 그대로 둔다.
+//   payer — 오면 그 거래·고정 항목의 결제인(수입이면 받은 사람)도 바꾼다.
+// 구성원이 아닌 이름은 받지 않는다. 없는 id 는 건너뛴다. 정산 칸은 건드리지 않는다: 이미 정산된(O) 거래의 정산 금액은 다시 계산되지 않는다 (앱이 옮기기 전에 알린다).
+// 시트는 탭마다 한 번 읽고, 바뀐 줄의 바뀐 칸(분담·결제인·수정)만 쓴다 (이어진 줄은 한 번에).
+function shareMove_(req) {
+  if (cfg_('LEDGER_TYPE') !== 'shared') throw new Error('공동 장부에서만 쓸 수 있습니다');
+  var members = split_(cfg_('MEMBERS'));
+  var hasShare = req.share !== undefined && req.share !== null;
+  var share = hasShare ? String(req.share).trim() : '';
+  if (hasShare && share && members.indexOf(share) < 0) throw new Error('분담은 빈칸(공용)이나 구성원 이름이어야 합니다: ' + share);
+  var payer = req.payer === undefined || req.payer === null ? '' : String(req.payer).trim();
+  if (payer && members.indexOf(payer) < 0) throw new Error('결제인은 구성원 이름이어야 합니다: ' + payer);
+  if (!hasShare && !payer) throw new Error('바꿀 내용이 없습니다');
+  var now = new Date();
+  // 한 탭에서 ids 에 든 줄을 찾아 고치고, 바뀐 줄의 values 를 돌려준다. col: 그 탭의 열 이름 → 번호
+  function move(sh, ncols, col, ids) {
+    var want = {}, n = 0; (ids || []).forEach(function (id) { if (id !== undefined && id !== null && id !== '') { want[String(id)] = 1; n++; } });
+    var last = sh ? sh.getLastRow() : 0, hit = [];
+    if (!n || last < 2) return hit;
+    var vals = sh.getRange(2, 1, last - 1, ncols).getValues(), idx = [];
+    for (var i = 0; i < vals.length; i++) {
+      var row = vals[i]; if (row[0] === '' || !want[String(row[0])]) continue;
+      if (hasShare && row[col['유형']] !== '수입') row[col['분담']] = share;
+      if (payer) row[col['결제인']] = payer;
+      row[col['수정']] = now;
+      idx.push(i); hit.push(row);
+    }
+    var cols = [col['수정']]; if (hasShare) cols.push(col['분담']); if (payer) cols.push(col['결제인']);
+    for (var a = 0; a < idx.length;) {
+      var b = a; while (b + 1 < idx.length && idx[b + 1] === idx[b] + 1) b++;   // 이어진 줄 a..b 는 한 번에 쓴다
+      cols.forEach(function (c) { var out = []; for (var k = a; k <= b; k++) out.push([vals[idx[k]][c]]); sh.getRange(idx[a] + 2, c + 1, out.length, 1).setValues(out); });
+      a = b + 1;
+    }
+    return hit;
+  }
+  var rows = move(txSheet_(), COLS.length, COL, req.txIds).map(rowToObj_);
+  var recN = move(recSheet_(), RCOLS.length, RCOL, req.recIds).length;
+  CACHE_.tx = null; CACHE_.rec = null;
+  return { rows: rows, recurring: readRecurring_(), moved: { tx: rows.length, rec: recN }, balance: balance_() };
 }
 
 // ---------------------------------------------------------------- 사전

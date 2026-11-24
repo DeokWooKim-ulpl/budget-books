@@ -1,7 +1,7 @@
 /* 가계부 PWA — 공동/개인 공용. 설정은 ./config.js (window.LEDGER_CONFIG) 와 서버 config 액션에서 온다. */
 (function () {
   'use strict';
-  var APP_VERSION = '2026-11-24a';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
+  var APP_VERSION = '2026-11-24b';   // 더보기 맨 아래에 보인다. 배포할 때 index.html / sw.js 의 ?v= 와 같이 올린다
   var CFG = window.LEDGER_CONFIG || {};
   // 같은 도메인에 공동/개인 앱이 함께 올라가므로 저장 키를 경로별로 나눈다
   var NS = 'ledger:' + location.pathname.replace(/[^/]*$/, '') + ':';
@@ -19,6 +19,7 @@
     balance: null, settlements: [], settlementsTotal: 0, accounts: [], accountLog: [], accSel: null, accEdit: null, debts: [], debtEdit: null, events: [], evtEdit: null,
     itemCounts: {}, formItems: null, formItemsFor: null, itemsLoadedFor: null, itemsLoading: null, budget: null, budgetSuggest: null, categoryStats: null, listQ: '', listFilter: null, listAll: null, listAllLoading: false,   // formItemsFor: 품목 목록이 어느 폼('add' / 'edit/<id>') 것인지, itemsLoadedFor: 서버에서 품목을 받아 온 거래 id
     groups: [], groupSel: null, groupEdit: null, accLogs: {}, accTxEdit: null, accYear: {}, evtRows: null,   // evtRows: 이벤트 화면에서 받은 전체 거래 (이벤트별 정산 계산용)
+    sheet: null,   // 묶음 옮기기 확인 창: { src: 옮길 것, to: 옮길 묶음(없으면 '어디로 옮길까요?' 선택) }
     syncing: false, returnTo: null, shown: null,   // shown: 지금 화면에 올라와 있는 데이터의 사이클 (다른 사이클을 받지 못하면 여기로 되돌린다)
     loading: false, error: null, prefill: null, toast: null, ocr: null, view: 'home', editId: null, editRow: null   // editRow: 목록·달력에서 누른 거래 (지금 사이클 밖의 거래도 수정 폼을 열 수 있게 잡아 둔다)
   };
@@ -239,6 +240,17 @@
               case 'recurring': { var cyr = p.cycle || cfg().currentCycle; return resolve({ ok: true, recurring: recs(), due: due(cyr).map(function (r) { return r.id; }), cycle: cyr }); }
               case 'recurringSave': { var rl = recs(); var it = Object.assign({ '유형': '지출', '활성': 'Y', '계획': 'Y' }, p.item || {}); it['금액'] = Math.round(Number(String(it['금액']).replace(/[^\d.-]/g, '')) || 0); it['일'] = Math.min(31, Math.max(1, Number(it['일']) || 1)); it['결제인'] = it['결제인'] || cfg().members[0]; if (!it['이름']) throw new Error('이름을 입력하세요'); if (!it['금액']) throw new Error('금액을 입력하세요'); if (!it['카테고리']) it['카테고리'] = it['유형'] === '수입' ? '수입' : ''; var ri = it.id ? rl.findIndex(function (r) { return r.id === it.id; }) : -1; if (ri < 0) { it.id = 'r' + Math.random().toString(36).slice(2); rl.push(it); } else rl[ri] = it; saveRecs(rl); return resolve({ ok: true, item: it, recurring: rl }); }
               case 'recurringDelete': { var rl2 = recs().filter(function (r) { return r.id !== p.id; }); saveRecs(rl2); return resolve({ ok: true, deleted: true, recurring: rl2 }); }
+              // 묶음 옮기기 (서버 shareMove_ 와 같다): 거래·고정 항목 여러 건의 분담(share)·결제인(payer)을 한 번에 바꾼다
+              case 'shareMove': { var cS = cfg(); if (cS.ledgerType !== 'shared') throw new Error('공동 장부에서만 쓸 수 있습니다');
+                var hasS = p.share !== undefined && p.share !== null, sS = hasS ? String(p.share).trim() : '', pS = p.payer == null ? '' : String(p.payer).trim();
+                if (hasS && sS && cS.members.indexOf(sS) < 0) throw new Error('분담은 빈칸(공용)이나 구성원 이름이어야 합니다: ' + sS);
+                if (pS && cS.members.indexOf(pS) < 0) throw new Error('결제인은 구성원 이름이어야 합니다: ' + pS);
+                if (!hasS && !pS) throw new Error('바꿀 내용이 없습니다');
+                var tI = (p.txIds || []).map(String), rI = (p.recIds || []).map(String), chg = [], rlS = recs(), rN = 0;
+                var mv = function (o) { if (hasS && o['유형'] !== '수입') o['분담'] = sS; if (pS) o['결제인'] = pS; o['수정'] = nowIso(); };
+                all.forEach(function (o) { if (tI.indexOf(String(o.id)) >= 0) { mv(o); chg.push(o); } }); save(all);
+                rlS.forEach(function (r) { if (rI.indexOf(String(r.id)) >= 0) { mv(r); rN++; } }); saveRecs(rlS);
+                return resolve({ ok: true, rows: chg, recurring: rlS, moved: { tx: chg.length, rec: rN }, balance: balance() }); }
               case 'applyRecurring': { var cya = p.cycle || cfg().currentCycle; var ds = due(cya); if (p.ids && p.ids.length) ds = ds.filter(function (r) { return p.ids.indexOf(r.id) >= 0; }); var am = p.amounts || {}, ud = p.updateDefault || []; var added = ds.map(function (r) { var amt = Math.round(Number(String(am[r.id] == null ? '' : am[r.id]).replace(/[^\d.-]/g, '')) || 0); if (amt <= 0) amt = r['금액']; if (amt !== r['금액'] && ud.indexOf(r.id) >= 0) { var rl3 = recs(); var k3 = rl3.findIndex(function (x) { return x.id === r.id; }); if (k3 >= 0) { rl3[k3]['금액'] = amt; saveRecs(rl3); } } var tx = normalize({ '일시': recDate(r, cya), '유형': r['유형'], '금액': amt, '가맹점': r['이름'], '카테고리': r['카테고리'], '항목': r['메모'] || '', '결제인': r['결제인'], '계획': r['계획'], '출처': '고정', '상태': '확인', '원문': '고정:' + r.id, '분담': r['분담'] || '' }); tx.id = Math.random().toString(36).slice(2) + Date.now().toString(36); tx['등록'] = tx['수정'] = nowIso(); all.push(tx); return tx; }); save(all); return resolve({ ok: true, added: added.length, rows: added }); }
               case 'list': { var cy = p.cycle || cfg().currentCycle; var rs = all.filter(function (o) { return cy === 'all' || o['사이클'] === cy || o['상태'] === '미확인'; }); rs.sort(function (a, b) { return a['일시'] < b['일시'] ? 1 : -1; }); return resolve({ ok: true, rows: rs, cycle: cy }); }
               case 'add': { var cid = /^c[0-9a-z]{8,30}$/.test(String((p.tx && p.tx.id) || '')) ? String(p.tx.id) : ''; var dup = cid ? all.filter(function (r) { return r.id === cid; })[0] : null; if (dup) return resolve({ ok: true, row: dup });   // 앱이 붙인 고유 키(c…)가 이미 있으면 같은 거래를 다시 보낸 것: 새로 쓰지 않는다
@@ -624,6 +636,7 @@
     var parts = h.split('/');
     state.view = parts[0] || 'home';
     state.editId = parts[0] === 'edit' ? parts[1] : null;
+    state.sheet = null;   // 화면을 옮기면 옮기기 확인 창은 닫는다
     if (state.view !== 'add') { state.prefill = null; state.returnTo = null; }   // 입력 폼을 떠나면 미리 채운 값·돌아갈 화면을 버린다 (다음 새 입력에 섞이지 않게)
     var fkey = state.view === 'edit' ? 'edit/' + state.editId : (state.view === 'add' ? 'add' : null);
     if (fkey !== state.formItemsFor) { state.formItems = null; state.formItemsFor = fkey; state.itemsLoadedFor = null; state.itemsLoading = null; }   // 품목 목록은 그 폼의 것만 쓴다 (다른 거래·새 입력에 따라가지 않게)
@@ -670,7 +683,7 @@
         default: html += renderHome();
       }
     }
-    html += renderNav();
+    html += renderNav() + renderSheet();
     $app.innerHTML = html;
     if (state.view === 'cal') fitCalAmounts();
     renderToast();
@@ -705,12 +718,17 @@
     if (state.due.length) {
       var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
       var dueSum = dueItems.reduce(function (a, r) { return a + (r['유형'] === '수입' ? 0 : r['금액']); }, 0);
-      h += '<div class="card"><h2>' + cycWord() + '에 아직 반영 안 된 고정 항목 ' + dueItems.length + '건</h2><div class="sub" style="margin-bottom:10px">' + esc(dueItems.map(function (r) { return r['이름'] + ' ' + won(r['금액']); }).join(' · ')) + (dueSum ? ' (지출 ' + won(dueSum) + ')' : '') + '</div><div class="row" style="gap:8px"><button class="btn primary" style="flex:1" data-act="recapply">거래에 반영</button><button class="btn" data-act="goto" data-to="recurring">목록 보기</button></div></div>';
+      var dueInc = dueItems.filter(function (r) { return r['유형'] === '수입'; }).length, dueExp = dueItems.length - dueInc;
+      // 6건 이상이면 이름을 다 늘어놓지 않고 건수와 지출 합계만 (고정 항목이 서른 건이면 이름만으로 카드가 화면을 채운다)
+      var dueDesc = dueItems.length >= 6 ? [dueInc ? '수입 ' + dueInc + '건' : '', dueExp ? '지출 ' + dueExp + '건 ' + won(dueSum) : ''].filter(Boolean).join(' · ')
+        : dueItems.map(function (r) { return r['이름'] + ' ' + won(r['금액']); }).join(' · ') + (dueSum ? ' (지출 ' + won(dueSum) + ')' : '');
+      h += '<div class="card"><h2>' + cycWord() + '에 아직 반영 안 된 고정 항목 ' + dueItems.length + '건</h2><div class="sub" style="margin-bottom:10px">' + esc(dueDesc) + '</div><div class="row" style="gap:8px"><button class="btn primary" style="flex:1" data-act="recapply">거래에 반영</button><button class="btn" data-act="goto" data-to="recurring">목록 보기</button></div></div>';
     }
     h += renderQuickCard();
     h += '<div class="card"><h2>' + cycWord() + ' 지출</h2><div class="big">' + won(s.expense) + '</div>';
     if (isShared()) {
-      h += '<div class="sub" style="margin-top:6px">' + Object.keys(s.byPayer).map(function (p) { return esc(p) + ' ' + won(s.byPayer[p]); }).join(' · ') + '</div>';
+      var gl = groupLine(); if (gl) h += '<div class="sub" style="margin-top:6px">' + gl + '</div>';   // 누구 지출인가: 공용 / 구성원 개인
+      var payers = Object.keys(s.byPayer); if (payers.length) h += '<div class="sub" style="margin-top:4px"><span class="muted">낸 사람</span> ' + payers.map(function (p) { return esc(p) + ' ' + won(s.byPayer[p]); }).join(' · ') + '</div>';
     } else {
       var bt = s.budgetTotal || state.config.budgetTotal;
       if (s.remaining != null && bt) {
@@ -726,12 +744,7 @@
     h += '</div>';
     if (isShared()) h += renderSettleCard();
     h += renderAccountsCard() + renderDebtsCard() + renderEventsCard() + renderGroupsCard();
-    var cats = Object.keys(s.byCategory).sort(function (a, b) { return s.byCategory[b] - s.byCategory[a]; });
-    var max = cats.length ? s.byCategory[cats[0]] : 1;
-    h += '<div class="card catlist"><h2>카테고리</h2>' + (cats.length ? cats.map(function (c) {
-      var b = s.budgets && s.budgets[c]; var v = s.byCategory[c];
-      return '<div><div class="row"><span>' + esc(c) + '</span><span><b>' + won(v) + '</b>' + (b ? ' <span class="sub">/ ' + won(b) + '</span>' : '') + '</span></div><div class="bar"><i class="' + (b && v > b ? 'over' : '') + '" style="width:' + Math.round(v / (b || max) * 100) + '%"></i></div></div>';
-    }).join('') : '<div class="empty">이 사이클에 거래가 없습니다</div>') + '</div>';
+    h += renderCatCard();
     h += '<button class="btn primary block" data-act="goto" data-to="add">＋ 거래 입력</button>';
     return h;
   }
@@ -854,6 +867,56 @@
   function memberSeg(name, cur, members) { return '<div class="seg" data-name="' + name + '">' + members.map(function (m) { return '<button type="button" class="' + (cur === m ? 'on' : '') + '" data-v="' + esc(m) + '">' + esc(m) + '</button>'; }).join('') + '</div>'; }
   function activeEvents() { return (state.events || []).filter(function (e) { return e['상태'] !== '마감'; }); }
   function shareLabel(v) { var m = state.config.members; if (!v) return '반씩'; if (m.indexOf(v) >= 0) return v + ' 전액'; return v; }
+
+  // ------------------------------------------------------------ 묶음: 공용 / 구성원 개인 (공동 장부)
+  // 거래·고정 항목 하나가 누구 것인가. 지출: 분담 칸이 구성원 이름이면 그 사람 개인(전액 부담), 아니면(빈칸·"60:40") 둘이 나누는 공용. 수입: 받은 사람(결제인).
+  // 돌려주는 값: '' = 공용(수입이면 받은 사람을 모름), 이름 = 그 사람. 홈 카테고리·고정 항목·반영 화면·통계·옮기기가 모두 이 하나를 쓴다
+  function groupOf(o) {
+    var m = (state.config && state.config.members) || [];
+    if (o['유형'] === '수입') { var p = canonPayer(o['결제인'], m); return m.indexOf(p) >= 0 ? p : ''; }
+    var s = String(o['분담'] || '').trim(); return m.indexOf(s) >= 0 ? s : '';
+  }
+  function groupName(g, income) { return income ? (g ? g + ' 수입' : '받는 사람 미정') : (g ? g + ' 개인' : '공용'); }
+  function iga(name) { var c = String(name).charCodeAt(String(name).length - 1); return c >= 0xAC00 && c <= 0xD7A3 ? ((c - 0xAC00) % 28 ? '이' : '가') : '이(가)'; }   // 지민이 / 덕우가
+  function euro(name) { var c = String(name).charCodeAt(String(name).length - 1); if (!(c >= 0xAC00 && c <= 0xD7A3)) return '(으)로'; var j = (c - 0xAC00) % 28; return j && j !== 8 ? '으로' : '로'; }   // 개인으로 / 공용으로 / 덕우로
+  // 지금 사이클의 지출 거래 (취소 제외). 서버 요약(summary.expense·byCategory)과 같은 대상이다. state.rows 에는 다른 사이클의 미확인 거래도 섞여 있다
+  function cycleExpenses() { return (state.rows || []).filter(function (o) { return o['사이클'] === state.cycle && o['유형'] !== '수입' && o['상태'] !== '취소'; }); }
+  // 홈 "카테고리" 카드의 묶음. 서버 요약에는 누구 지출인지·고정인지가 없어서 지금 사이클 거래로 앱이 직접 묶는다 (저장·삭제·옮기기 직후에도 바로 맞는다).
+  // 공동: 공용 / 구성원별 개인 (key '' / 이름). 개인 장부: 생활비(변동, key 'v') / 고정 지출('f', 출처가 '고정' — 예산이 생활비만이라는 기준과 같다). 묶음 안은 금액 큰 순
+  function catGroups() {
+    var shared = isShared(), keys = shared ? [''].concat(state.config.members) : ['v', 'f'], by = {};
+    keys.forEach(function (k) { by[k] = { key: k, sum: 0, count: 0, cats: {} }; });
+    cycleExpenses().forEach(function (o) {
+      var g = by[shared ? groupOf(o) : (o['출처'] === '고정' ? 'f' : 'v')], c = o['카테고리'] || '미분류', a = Number(o['금액']) || 0;
+      var e = g.cats[c] || (g.cats[c] = { name: c, sum: 0, count: 0 }); e.sum += a; e.count++; g.sum += a; g.count++;
+    });
+    return keys.map(function (k) { var g = by[k]; g.list = Object.keys(g.cats).map(function (c) { return g.cats[c]; }).sort(function (a, b) { return b.sum - a.sum || (a.name < b.name ? -1 : 1); }); return g; });
+  }
+  // "공용 ○원 · 덕우 개인 ○원 · 지민 개인 ○원" (공동 장부: 홈 지출 카드, 통계)
+  function groupLine() { var gs = catGroups(); return gs.some(function (g) { return g.sum; }) ? gs.map(function (g) { return esc(groupName(g.key)) + ' ' + won(g.sum); }).join(' · ') : ''; }
+  function canMove() { return isShared() && hasV3() && !state.oldBackend; }   // 묶음 옮기기는 분담 칸이 있는 서버에서만
+  // 손잡이(≡): 누른 채 끌면 줄이 따라오고, 그냥 누르면(키보드 Enter 도) '어디로 옮길까요?' 가 뜬다. 무엇을 옮기는지는 손잡이의 data-* 에 있다 (type: cat 카테고리 | rec 고정 항목, kind: e 지출 | i 수입, g: 지금 묶음, k: 카테고리 이름 | 고정 항목 id)
+  function gripBtn(type, kind, g, k, label) { return '<button type="button" class="grip" data-act="movepick" data-type="' + type + '" data-kind="' + kind + '" data-g="' + esc(g) + '" data-k="' + esc(k) + '" aria-label="' + esc(label) + ' 다른 묶음으로 옮기기" title="끌어서 옮기기 (누르면 고르기)">≡</button>'; }
+  function renderCatCard() {
+    var s = state.summary, shared = isShared(), groups = catGroups(), mv = canMove(), total = {}, seen = {};
+    groups.forEach(function (g) { g.list.forEach(function (c) { total[c.name] = (total[c.name] || 0) + c.sum; }); });
+    var h = '<div class="card catlist"><h2>카테고리</h2>';
+    if (!groups.some(function (g) { return g.list.length; })) return h + '<div class="empty">이 사이클에 거래가 없습니다</div></div>';
+    groups.forEach(function (g) {
+      if (!shared && !g.list.length) return;   // 개인 장부: 빈 묶음은 감춘다. 공동: 빈 묶음도 끌어다 놓을 자리로 남긴다
+      var title = shared ? (g.key ? esc(g.key) : '공용 지출') : (g.key === 'f' ? '고정 지출' : '생활비 <span class="muted">변동 지출</span>');
+      h += '<div class="grp"' + (shared ? ' data-drop="e" data-g="' + esc(g.key) + '"' : '') + '><div class="grp-h"><b>' + title + '</b><span>' + won(g.sum) + '</span></div>';
+      h += g.list.length ? g.list.map(function (c) {
+        // 카테고리 예산: 글자로만 "쓴 돈 / 예산" (초과면 빨간 글자). 같은 카테고리가 두 묶음에 나오면 처음 나온 줄에 합친 금액으로 한 번만
+        var b = s.budgets && s.budgets[c.name], bud = '', over = false;
+        if (b && !seen[c.name]) { seen[c.name] = 1; over = total[c.name] > b; bud = ' <span class="sub">' + (total[c.name] !== c.sum ? '합쳐서 ' + won(total[c.name]) + ' ' : '') + '/ ' + won(b) + '</span>'; }
+        return '<div class="grp-row"' + (shared ? ' data-drag="cat" data-g="' + esc(g.key) + '" data-k="' + esc(c.name) + '"' : '') + '><span class="nm">' + esc(c.name) + '</span><span class="amt"><b' + (over ? ' class="danger"' : '') + '>' + won(c.sum) + '</b>' + bud + '</span>' + (mv ? gripBtn('cat', 'e', g.key, c.name, c.name) : '') + '</div>';
+      }).join('') : '<div class="grp-empty">없음</div>';
+      h += '</div>';
+    });
+    if (mv) h += '<div class="sub grp-tip">≡ 를 끌거나 누르면 다른 묶음으로 옮길 수 있습니다.</div>';
+    return h + '</div>';
+  }
 
   // ---- 정산 (공동): 지금 누가 누구에게 얼마, 일부 보내기, 기록
   // 결제인을 알 수 없는 미정산 거래 (새 서버의 balance.unknownPayers. 옛 서버에는 없어 아무것도 그리지 않는다)
@@ -1324,7 +1387,7 @@
     if (isShared()) {
       var payers = Object.keys(s.byPayer).map(function (k) { return { k: k, v: s.byPayer[k] }; });
       var st = state.balance ? state.balance.remaining : s.settlementAll;   // 홈 정산 카드와 같은 값 (분담·보낸 돈 반영, 미정산 전체). 서버 요약의 옛 반반 계산(s.settlement)은 쓰지 않는다
-      h += '<div class="card"><h2>누가 얼마나 냈나</h2>' + stackBar(payers) + (st ? '<div class="sub" style="margin-top:8px">지금 정산할 금액: ' + esc(st.from) + ' → ' + esc(st.to) + ' ' + won(st.amount) + '</div>' : '') + '</div>';
+      h += '<div class="card"><h2>누가 얼마나 냈나</h2>' + stackBar(payers) + (groupLine() ? '<div class="sub" style="margin-top:8px"><span class="muted">누구 지출인가</span> ' + groupLine() + '</div>' : '') + (st ? '<div class="sub" style="margin-top:8px">지금 정산할 금액: ' + esc(st.from) + ' → ' + esc(st.to) + ' ' + won(st.amount) + '</div>' : '') + '</div>';
     } else {
       h += '<div class="card"><h2>계획 / 비계획</h2>' + stackBar([{ k: '계획', v: s.planned }, { k: '비계획', v: s.unplanned }]) + '</div>';
     }
@@ -1335,16 +1398,47 @@
 
   // ------------------------------------------------------------ 고정 수입/지출
   // 고정 항목 반영 확인: 항목마다 이번 달 금액을 고치고(월급·전기료처럼 달마다 다른 것), 빼고 싶은 건 체크 해제
+  // 고정 항목을 묶는다. 공동: 수입은 받는 사람별, 지출은 공용·구성원 개인. 개인 장부: 수입 / 지출 한 묶음씩. 묶음 안은 날짜순(같은 날은 받은 순서). sum·n 은 켜진 항목만
+  function recGroups(list) {
+    var sh = isShared(), m = state.config.members, out = { inc: [], exp: [] }, other = null;
+    function mk(kind, g, title, full) { return { kind: kind, g: g, title: title, full: full || title, items: [], sum: 0, n: 0, drop: true }; }
+    if (sh) { m.forEach(function (x) { out.inc.push(mk('i', x, x + ' 수입')); }); out.exp.push(mk('e', '', '공용', '공용 지출')); m.forEach(function (x) { out.exp.push(mk('e', x, x + ' 개인', x + ' 개인 지출')); }); }
+    else { out.inc.push(mk('i', '', '수입')); out.exp.push(mk('e', '', '지출')); }
+    list.forEach(function (r, i) {
+      var inc = r['유형'] === '수입', gs = inc ? out.inc : out.exp, g = sh ? groupOf(r) : '', hit = gs.filter(function (x) { return x.g === g; })[0];
+      if (!hit) { if (!other) { other = mk('i', '', '받는 사람 미정'); other.drop = false; gs.push(other); } hit = other; }   // 공동 장부의 수입인데 받는 사람이 구성원이 아니다
+      hit.items.push({ r: r, i: i }); if (r['활성'] !== 'N') { hit.sum += Number(r['금액']) || 0; hit.n++; }
+    });
+    out.inc.concat(out.exp).forEach(function (g) { g.items = g.items.sort(function (a, b) { return a.r['일'] - b.r['일'] || a.i - b.i; }).map(function (x) { return x.r; }); });
+    return out;
+  }
+  // 고정 항목 줄의 설명. 묶음 머리글로 이미 알 수 있는 말(결제인, "○○ 전액")은 빼고, 낸 사람이 묶음 주인과 다를 때만 "지민이 냄" (공용은 주인이 따로 없어 늘 적는다)
+  function recPayNote(r) {
+    if (!isShared() || r['유형'] === '수입') return '';
+    var m = state.config.members, g = groupOf(r), p = canonPayer(r['결제인'], m), sh = String(r['분담'] || '').trim();
+    return [!g && sh ? sh : '', p && p !== g ? p + iga(p) + ' 냄' : ''].filter(Boolean).join(' · ');   // 공용인데 분담 칸에 "60:40" 같은 비율이 있으면 그 비율도
+  }
+  // 메모에서 이관 표시("[이관] …")와 이미 줄에 있는 날짜("매월 25일")는 빼고 보여 준다 (시트의 메모는 그대로)
+  function recCat(r) { var c = String(r['카테고리'] || ''); return (r['유형'] === '수입' && c === '수입') || c === String(r['이름'] || '').trim() ? '' : c; }   // 이름과 같은 카테고리("티빙 · 티빙"), 수입의 '수입'은 되풀이하지 않는다
+  function recMemo(r) {
+    return String(r['메모'] || '').split(' · ').map(function (x) { return x.trim(); }).filter(function (x) {
+      if (!x || x.indexOf('[이관]') === 0) return false;
+      var d = /^[>\s]*(?:매월\s*)?(\d+)일$/.exec(x); return !(d && Number(d[1]) === Number(r['일']));
+    }).join(' · ');
+  }
   function renderRecApply() {
     var dueItems = state.recurring.filter(function (r) { return state.due.indexOf(r.id) >= 0; });
     if (!dueItems.length) return '<div class="empty">' + cycWord() + '(' + esc(state.cycle) + ')에 반영할 고정 항목이 없습니다</div><button class="btn block" data-act="goto" data-to="recurring">고정 항목 관리</button>';
-    var h = '<form id="recapplyform" class="card"><h2>' + esc(state.cycle) + ' 사이클에 반영 <span class="muted">(' + esc(cycleLabel(state.cycle)) + ')</span></h2><p class="sub" style="margin:0 0 10px">금액이 다른 달은 여기서 고치고 반영하세요. "기본값으로"를 켜면 다음 달부터 그 금액이 기본이 됩니다.</p>';
-    ['수입', '지출'].forEach(function (t) {
-      var list = dueItems.filter(function (r) { return (r['유형'] === '수입') === (t === '수입'); }); if (!list.length) return;
-      h += '<h2 style="margin-top:12px">' + t + '</h2>' + list.map(function (r) {
-        return '<div class="recapply-row"><label class="row" style="gap:8px;justify-content:flex-start"><input type="checkbox" name="use:' + esc(r.id) + '" checked><b>' + esc(r['이름']) + '</b><span class="sub">' + esc([r['카테고리'], isShared() ? r['결제인'] : '', '매월 ' + r['일'] + '일'].filter(Boolean).join(' · ')) + '</span></label>' +
+    var h = '<form id="recapplyform" class="card"><h2>' + esc(state.cycle) + ' 사이클에 반영 <span class="muted">(' + esc(cycleLabel(state.cycle)) + ')</span></h2><p class="sub" style="margin:0 0 10px">금액이 다른 달은 여기서 고치고 반영하세요. "기본값으로"를 켜면 다음 달부터 그 금액이 기본이 됩니다. 묶음 이름 옆 체크로 그 묶음을 한꺼번에 넣거나 뺄 수 있습니다.</p>';
+    var gr = recGroups(dueItems);
+    gr.inc.concat(gr.exp).forEach(function (g) {
+      if (!g.items.length) return;
+      var key = g.kind + ':' + g.g;   // 묶음 머리글의 체크(data-act="grpcheck")가 같은 data-g 의 use: 체크박스를 한꺼번에 켜고 끈다. 제출은 전처럼 use:<id> 만 읽는다
+      h += '<div class="grp"><div class="grp-h"><label><input type="checkbox" data-act="grpcheck" data-g="' + esc(key) + '" checked> <b>' + esc(g.full) + '</b></label><span class="sub">' + g.items.length + '건 · ' + won(g.sum) + '</span></div>';
+      h += g.items.map(function (r) {
+        return '<div class="recapply-row"><label class="row" style="gap:8px;justify-content:flex-start"><input type="checkbox" name="use:' + esc(r.id) + '" data-g="' + esc(key) + '" checked><b>' + esc(r['이름']) + '</b><span class="sub">' + esc([recCat(r), recPayNote(r), '매월 ' + r['일'] + '일'].filter(Boolean).join(' · ')) + '</span></label>' +
           '<div class="row" style="gap:8px;margin-top:4px"><input type="text" inputmode="numeric" name="amt:' + esc(r.id) + '" value="' + esc(Number(r['금액']).toLocaleString('ko-KR')) + '" style="flex:1;text-align:right;font-weight:700"><label class="sub" style="white-space:nowrap"><input type="checkbox" name="def:' + esc(r.id) + '"> 기본값으로</label></div></div>';
-      }).join('');
+      }).join('') + '</div>';
     });
     h += '<div class="row" style="gap:8px;margin-top:14px"><button type="button" class="btn" data-act="goto" data-to="home">취소</button><button type="submit" class="btn primary" style="flex:1">거래에 반영</button></div></form>';
     return h;
@@ -1374,19 +1468,195 @@
     } else {
       h += '<button class="btn primary block" data-act="recnew">＋ 고정 항목 추가</button>';
     }
-    var inc = state.recurring.filter(function (r) { return r['유형'] === '수입'; }), exp = state.recurring.filter(function (r) { return r['유형'] !== '수입'; });
-    function sum(list) { return list.reduce(function (a, r) { return a + (r['활성'] === 'N' ? 0 : r['금액']); }, 0); }
+    var sh = isShared(), mv = canMove(), gr = recGroups(state.recurring);
+    function sum(gs) { return gs.reduce(function (a, g) { return a + g.sum; }, 0); }
     function recRow(r) {
-      var meta = ['매월 ' + r['일'] + '일', r['카테고리'], isShared() ? r['결제인'] + (r['분담'] ? ' · ' + shareLabel(r['분담']) : '') : (r['계획'] === 'N' ? '비계획' : '계획'), r['메모']].filter(Boolean).join(' · ');
+      var inc = r['유형'] === '수입';
+      var meta = ['매월 ' + r['일'] + '일', recCat(r), sh ? recPayNote(r) : (r['계획'] === 'N' ? '비계획' : ''), recMemo(r)].filter(Boolean).join(' · ');
       var isDue = state.due.indexOf(r.id) >= 0;
-      return '<div class="tx' + (r['활성'] === 'N' ? ' cancelled' : '') + '" data-act="recedit" data-id="' + esc(r.id) + '"><span class="cat ' + (isDue ? 'none' : '') + '">' + (r['활성'] === 'N' ? '꺼짐' : (isDue ? '미반영' : '반영됨')) + '</span><div class="main"><div class="name">' + esc(r['이름']) + '</div><div class="meta">' + esc(meta) + '</div></div><span class="amt ' + (r['유형'] === '수입' ? 'income' : '') + '">' + (r['유형'] === '수입' ? '+' : '') + won(r['금액']) + '</span><button type="button" class="btn small" data-act="rectoggle" data-id="' + esc(r.id) + '" title="켜기/끄기">' + (r['활성'] === 'N' ? '켜기' : '끄기') + '</button></div>';
+      return '<div class="tx' + (r['활성'] === 'N' ? ' cancelled' : '') + '" data-act="recedit" data-id="' + esc(r.id) + '"' + (mv ? ' data-drag="rec" data-k="' + esc(r.id) + '"' : '') + '><span class="cat ' + (isDue ? 'none' : '') + '">' + (r['활성'] === 'N' ? '꺼짐' : (isDue ? '미반영' : '반영됨')) + '</span><div class="main"><div class="name">' + esc(r['이름']) + '</div><div class="meta">' + esc(meta) + '</div></div><span class="amt ' + (inc ? 'income' : '') + '">' + (inc ? '+' : '') + won(r['금액']) + '</span><button type="button" class="btn small" data-act="rectoggle" data-id="' + esc(r.id) + '" title="켜기/끄기">' + (r['활성'] === 'N' ? '켜기' : '끄기') + '</button>' + (mv ? gripBtn('rec', inc ? 'i' : 'e', groupOf(r), r.id, r['이름']) : '') + '</div>';
     }
-    h += '<div class="card"><h2>고정 수입 · 매달 ' + won(sum(inc)) + '</h2>' + (inc.length ? inc.map(recRow).join('') : '<div class="empty">없음</div>') + '</div>';
-    h += '<div class="card"><h2>고정 지출 · 매달 ' + won(sum(exp)) + '</h2>' + (exp.length ? exp.map(recRow).join('') : '<div class="empty">없음. 월세·관리비·보험료·구독료를 넣어 두세요</div>') + '</div>';
-    if (inc.length || exp.length) h += '<div class="card"><h2>매달 남는 돈 (고정 기준)</h2><div class="big ' + (sum(inc) - sum(exp) < 0 ? 'danger' : '') + '">' + won(sum(inc) - sum(exp)) + '</div><div class="sub">고정 수입 − 고정 지출. 변동 지출은 빼기 전입니다.</div></div>';
+    // 공동: 카드 안을 묶음으로 나눈다 (수입 = 받는 사람별, 지출 = 공용·구성원 개인). 빈 묶음도 끌어다 놓을 자리로 남긴다. 개인 장부: 전처럼 한 줄로
+    function recCard(title, gs, emptyMsg) {
+      var any = gs.some(function (g) { return g.items.length; });
+      var c = '<div class="card"><h2>' + title + ' · 매달 ' + won(sum(gs)) + '</h2>';
+      if (!sh) return c + (any ? gs[0].items.map(recRow).join('') : '<div class="empty">' + emptyMsg + '</div>') + '</div>';
+      if (!any) return c + '<div class="empty">' + emptyMsg + '</div></div>';
+      return c + gs.map(function (g) {
+        return '<div class="grp"' + (g.drop && mv ? ' data-drop="' + g.kind + '" data-g="' + esc(g.g) + '"' : '') + '><div class="grp-h"><b>' + esc(g.title) + '</b><span>매달 ' + won(g.sum) + '</span></div>' + (g.items.length ? g.items.map(recRow).join('') : '<div class="grp-empty">없음</div>') + '</div>';
+      }).join('') + '</div>';
+    }
+    h += recCard('고정 수입', gr.inc, '없음');
+    h += recCard('고정 지출', gr.exp, '없음. 월세·관리비·보험료·구독료를 넣어 두세요');
+    if (mv && state.recurring.length) h += '<div class="sub grp-tip" style="margin:0 4px 4px">≡ 를 끌거나 누르면 다른 묶음으로 옮길 수 있습니다. 줄을 누르면 수정합니다.</div>';
+    if (state.recurring.length) {
+      var left = sum(gr.inc) - sum(gr.exp);
+      h += '<div class="card"><h2>매달 남는 돈 (고정 기준)</h2>';
+      if (sh) {
+        // 사람별: 고정 수입 − 개인 고정 지출 − 공용 고정 지출의 자기 몫 (분담 비율. 항목에 "60:40" 이 적혀 있으면 그 비율)
+        var m = state.config.members, ratio = (state.balance && state.balance.ratio) || state.config.splitRatio || {}, inc = {}, own = {}, part = {};
+        if (!Object.keys(ratio).length) { ratio = {}; m.forEach(function (x) { ratio[x] = 1 / m.length; }); }
+        m.forEach(function (x) { inc[x] = 0; own[x] = 0; part[x] = 0; });
+        state.recurring.forEach(function (r) {
+          if (r['활성'] === 'N') return; var a = Number(r['금액']) || 0, g = groupOf(r);
+          if (r['유형'] === '수입') { if (g) inc[g] += a; return; }
+          if (g) own[g] += a; else m.forEach(function (x) { part[x] += a * shareOf(r, x, m, ratio); });
+        });
+        var line = function (label, f, cls) { return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><th>' + label + '</th>' + m.map(function (x) { var v = Math.round(f(x)); return '<td' + (cls && v < 0 ? ' class="danger"' : '') + '>' + won(v) + '</td>'; }).join('') + '</tr>'; };
+        h += '<div class="ptable-wrap"><table class="ptable"><thead><tr><th></th>' + m.map(function (x) { return '<th>' + esc(x) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+          line('고정 수입', function (x) { return inc[x]; }) + line('개인 지출', function (x) { return -own[x]; }) + line('공용 몫', function (x) { return -part[x]; }) + line('남는 돈', function (x) { return inc[x] - own[x] - part[x]; }, 'total') + '</tbody></table></div>';
+        h += '<div class="row kv" style="margin-top:8px"><span>' + (m.length === 2 ? '둘' : '모두') + ' 합쳐</span><b class="' + (left < 0 ? 'danger' : '') + '">' + won(left) + '</b></div>';
+        h += '<div class="sub" style="margin-top:6px">고정 수입 − 개인 고정 지출 − 공용 고정 지출의 자기 몫(' + m.map(function (x) { return Math.round((ratio[x] || 0) * 100); }).join(':') + '). 변동 지출은 빼기 전입니다.</div>';
+      } else h += '<div class="big ' + (left < 0 ? 'danger' : '') + '">' + won(left) + '</div><div class="sub">고정 수입 − 고정 지출. 변동 지출은 빼기 전입니다.</div>';
+      h += '</div>';
+    }
     return h;
   }
 
+  // ------------------------------------------------------------ 묶음 옮기기 (공동): 홈의 카테고리 줄·고정 항목 줄을 다른 묶음으로
+  // 무엇이 바뀌는지 모은다. src: 손잡이의 data-* ({ type: 'cat', g: 지금 묶음, k: 카테고리 } | { type: 'rec', k: 고정 항목 id }), to: 옮길 묶음('' = 공용, 이름)
+  //  - 홈 카테고리: 그 묶음·그 카테고리의 이번 사이클 지출 거래들의 분담. 고정 항목에서 온 거래(원문 '고정:<id>')면 그 고정 항목의 분담도 (다음 사이클에도 유지되게)
+  //  - 고정 항목: 그 항목의 분담(수입이면 받는 사람 = 결제인)과, 지금 보는 사이클에 이미 반영된 그 항목의 거래
+  function recOf(o) { var x = o['출처'] === '고정' ? /^고정:(.+)$/.exec(String(o['원문'] || '')) : null; return x ? x[1] : ''; }
+  function movePlan(src, to) {
+    var plan = { src: src, to: to, rows: [], recs: [], income: false, from: '', label: '', sum: 0 };
+    if (src.type === 'cat') {
+      plan.from = src.g; plan.label = src.k;
+      plan.rows = cycleExpenses().filter(function (o) { return groupOf(o) === src.g && (o['카테고리'] || '미분류') === src.k; });
+      var ids = {}; plan.rows.forEach(function (o) { var id = recOf(o); if (id) ids[id] = 1; plan.sum += Number(o['금액']) || 0; });
+      plan.recs = state.recurring.filter(function (r) { return ids[r.id] && r['유형'] !== '수입' && (to === undefined || groupOf(r) !== to); });
+    } else {
+      var rec = state.recurring.filter(function (r) { return r.id === src.k; })[0]; if (!rec) return null;
+      plan.income = rec['유형'] === '수입'; plan.from = groupOf(rec); plan.label = rec['이름']; plan.sum = Number(rec['금액']) || 0; plan.recs = [rec];
+      plan.rows = (state.rows || []).filter(function (o) { return o['사이클'] === state.cycle && o['상태'] !== '취소' && recOf(o) === rec.id; });
+    }
+    plan.pending = plan.rows.filter(function (o) { return String(o.id).indexOf('tmp-') === 0; }).length;   // 아직 서버 id 를 못 받은 거래는 고칠 수 없다
+    plan.settled = plan.rows.filter(isSettledExpense).length;
+    return plan.rows.length || plan.recs.length ? plan : null;
+  }
+  // 확인 창(화면 아래에서 올라온다). to 가 없으면 '어디로 옮길까요?' 선택(손잡이를 끌지 않고 누른 경우·키보드), 있으면 끌어다 놓은 뒤의 확인.
+  // 무엇이(이름·금액·건수) 어디서 어디로 가는지, 같이 바뀌는 고정 항목·거래, 이미 정산된 거래가 섞여 있는지를 보여 준다 (서버는 정산을 다시 계산하지 않는다)
+  function renderSheet() {
+    var st = state.sheet; if (!st || !state.config || !canMove()) return '';
+    var plan = movePlan(st.src, st.to); if (!plan) { state.sheet = null; return ''; }   // 그 사이 새로 받아 옮길 것이 없어졌다
+    var m = state.config.members, inc = plan.income, pick = st.to === undefined;
+    var targets = (inc ? m : [''].concat(m)).filter(function (g) { return g !== plan.from; });
+    var what = st.src.type === 'cat' ? '<b>' + esc(plan.label) + '</b> ' + won(plan.sum) + ' · 거래 ' + plan.rows.length + '건' : '<b>' + esc(plan.label) + '</b> 매달 ' + won(plan.sum);
+    var notes = [];
+    if (st.src.type === 'cat' && plan.recs.length) notes.push('고정 항목도 같이 바뀝니다 (다음 사이클부터도 그대로): ' + esc(plan.recs.map(function (r) { return r['이름']; }).join(', ')));
+    if (st.src.type === 'rec' && plan.rows.length) notes.push(cycWord() + '에 반영된 거래 ' + plan.rows.length + '건도 같이 바뀝니다.');
+    if (!inc) {
+      var others = []; plan.rows.concat(plan.recs).forEach(function (o) { var p = canonPayer(o['결제인'], m); if (p && others.indexOf(p) < 0 && (pick || (st.to && p !== st.to))) others.push(p); });
+      if (!pick && others.length) notes.push('낸 사람은 ' + esc(others.join(', ')) + ' 그대로입니다. ' + esc(st.to) + iga(st.to) + ' 냈다면 옮긴 뒤 줄을 눌러 고치세요.');
+      else if (pick && others.length) notes.push('낸 사람(결제인)은 바뀌지 않습니다.');
+    }
+    if (plan.settled) notes.push('<span class="warn">이미 정산된 거래 ' + plan.settled + '건이 들어 있습니다. 정산 금액은 다시 계산되지 않습니다.</span>');
+    var h = '<div class="sheet-back" data-act="sheetclose"></div><div class="sheet" role="dialog" aria-modal="true" aria-label="묶음 옮기기"><h2>' + (pick ? '어디로 옮길까요?' : '옮길까요?') + '</h2>';
+    h += '<div class="sheet-what">' + what + '</div><div class="sheet-from">' + (pick ? '지금: ' + esc(groupName(plan.from, inc)) : esc(groupName(plan.from, inc)) + ' → <b>' + esc(groupName(st.to, inc)) + '</b>') + '</div>';
+    if (notes.length) h += '<ul class="sheet-notes">' + notes.map(function (n) { return '<li>' + n + '</li>'; }).join('') + '</ul>';
+    if (pick) h += targets.map(function (g) { var nm = groupName(g, inc); return '<button type="button" class="btn block" data-act="moveto" data-v="' + esc(g) + '">' + esc(nm) + euro(nm) + '</button>'; }).join('') + '<button type="button" class="btn block sheet-cancel" data-act="sheetclose">취소</button>';
+    else h += '<div class="row" style="gap:8px;margin-top:14px"><button type="button" class="btn" data-act="sheetclose">취소</button><button type="button" class="btn primary" style="flex:1" data-act="moveto" data-v="' + esc(st.to) + '">옮기기</button></div>';
+    return h + '</div>';
+  }
+  // 서버에 보내기. 새 서버: shareMove 한 번. 옛 서버(이 액션을 모른다 → 'unknown action'): 거래마다 update, 고정 항목마다 recurringSave 를 차례로 부른다 (요청 하나가 3~5초라 느리지만 결과는 같다)
+  var noShareMove = false, moveBusy = 0;
+  function sendMove(req, plan) {
+    var slow = function () {
+      var p = Promise.resolve(), done = 0;
+      var step = function (fn) { p = p.then(function () { lastSync = Date.now(); return fn(); }).then(function () { done++; }); };
+      plan.rows.forEach(function (o) { step(function () { var tx = {}; if (req.share !== undefined) tx['분담'] = req.share; if (req.payer) tx['결제인'] = req.payer; return api.call('update', { id: o.id, tx: tx }); }); });
+      plan.recs.forEach(function (r) { step(function () { var it = Object.assign({}, r); if (req.share !== undefined) it['분담'] = req.share; if (req.payer) it['결제인'] = req.payer; return api.call('recurringSave', { item: it }); }); });
+      return p.catch(function (e) { e.partial = done > 0; throw e; });
+    };
+    if (noShareMove) return slow();
+    return api.call('shareMove', req).catch(function (e) { if (!/unknown action/i.test(e.message || '')) throw e; noShareMove = true; return slow(); });
+  }
+  // 옮기기: 화면을 먼저 바꾸고(거래·고정 항목의 분담, 정산 카드 금액) 서버에 보낸다. 실패하면 되돌리고 알린다
+  function doMove(src, to) {
+    var plan = movePlan(src, to); state.sheet = null;
+    if (!plan || plan.from === to || (to ? state.config.members.indexOf(to) < 0 : plan.income)) { render(); return; }   // 옮길 것이 없다 / 같은 묶음 / 구성원이 아닌 이름 / 수입을 공용으로
+    if (plan.pending) { render(); toast('아직 저장 중인 거래가 있습니다. 잠시 뒤 다시 옮겨 주세요'); return; }
+    var inc = plan.income, undo = [];
+    var set = function (o) { if (inc) o['결제인'] = to; else o['분담'] = to; };
+    plan.rows.forEach(function (o) { undo.push({ o: o, s: o['분담'], p: o['결제인'], tx: true }); bumpSummary(o, -1); set(o); bumpSummary(o, 1); });
+    plan.recs.forEach(function (r) { undo.push({ o: r, s: r['분담'], p: r['결제인'] }); set(r); });
+    var req = { txIds: plan.rows.map(function (o) { return o.id; }), recIds: plan.recs.map(function (r) { return r.id; }) }; if (inc) req.payer = to; else req.share = to;
+    var name = groupName(to, inc); lastSync = Date.now(); moveBusy++;
+    render(); toast(plan.label + ': ' + name + euro(name) + ' 옮겼습니다');
+    sendMove(req, plan).then(function () {
+      moveBusy--; if (!moveBusy) return refresh(true);   // 이어서 옮긴 것이 아직 가는 중이면 그것까지 끝난 뒤에 새로 받는다 (먼저 받으면 뒤의 것이 잠깐 되돌아가 보인다)
+    }).catch(function (err) {
+      moveBusy--;
+      undo.forEach(function (u) {   // 그 사이 새로 받아 줄이 바뀌었으면(목록에 없는 옛 객체) 되돌릴 것이 없다
+        if (u.tx) { if (state.rows.indexOf(u.o) < 0) return; bumpSummary(u.o, -1); u.o['분담'] = u.s; u.o['결제인'] = u.p; bumpSummary(u.o, 1); }
+        else if (state.recurring.indexOf(u.o) >= 0) { u.o['분담'] = u.s; u.o['결제인'] = u.p; }
+      });
+      toast(err.partial ? '옮기다가 실패했습니다: ' + err.message + '. 서버 내용을 다시 받습니다' : '옮기지 못해 되돌렸습니다: ' + err.message, null, null, 6000);
+      renderSoft(); if (!moveBusy && navigator.onLine !== false) refresh(true);
+    });
+  }
+
+  // ---- 끌어 옮기기: 손잡이(≡, touch-action: none)를 누른 채 움직이면 줄의 복사본이 손가락·마우스를 따라오고, 올려 둔 묶음이 강조되고, 놓으면 확인 창이 뜬다.
+  // HTML5 drag 이벤트는 터치에서 안 되므로 pointer 이벤트로 직접 한다. 끄는 동안 화면 위·아래 가장자리에서는 저절로 스크롤한다.
+  // 끄는 도중 화면이 다시 그려져도(새로고침 응답) 이어지게, 줄·묶음은 요소가 아니라 data-* 값으로 기억하고 표시는 움직일 때마다 지금 DOM 에 다시 건다.
+  var drag = null, dragEndAt = 0;
+  function gripSrc(el) { return { type: el.getAttribute('data-type'), kind: el.getAttribute('data-kind'), g: el.getAttribute('data-g') || '', k: el.getAttribute('data-k') || '' }; }
+  function dropAt(x, y) { var el = document.elementFromPoint(x, y); return el && el.closest ? el.closest('[data-drop]') : null; }
+  function dropOk(zone, src) { return !!zone && zone.getAttribute('data-drop') === src.kind && (zone.getAttribute('data-g') || '') !== src.g; }
+  function dragIsSrc(r, src) { return r.getAttribute('data-drag') === src.type && r.getAttribute('data-k') === src.k && (src.type !== 'cat' || (r.getAttribute('data-g') || '') === src.g); }
+  function dragPaint() {
+    var d = drag; if (!d || !d.on) return;
+    d.ghost.style.transform = 'translate(' + (d.x - d.x0) + 'px,' + (d.y - d.y0) + 'px)';
+    var over = dropAt(d.x, d.y);
+    Array.prototype.forEach.call(document.querySelectorAll('#app [data-drop]'), function (z) { var ok = dropOk(z, d.src); z.classList.toggle('drop-ok', ok); z.classList.toggle('drop-on', ok && z === over); });
+    Array.prototype.forEach.call(document.querySelectorAll('#app [data-drag]'), function (r) { r.classList.toggle('drag-src', dragIsSrc(r, d.src)); });
+  }
+  function dragScroll() {
+    var d = drag; if (!d || !d.on) return;
+    var top = 64, bottom = window.innerHeight - (window.innerWidth >= 900 ? 8 : 68), edge = 64, v = 0;   // 위는 고정된 머리줄 아래, 아래는 메뉴 위에서부터
+    if (d.y < top + edge) v = -(top + edge - d.y) / 4; else if (d.y > bottom - edge) v = (d.y - (bottom - edge)) / 4;
+    if (!v) return;
+    var before = window.pageYOffset; window.scrollBy(0, Math.max(-20, Math.min(20, v < 0 ? Math.floor(v) : Math.ceil(v))));
+    if (window.pageYOffset !== before) dragPaint();   // 손가락은 그대로인데 밑의 묶음이 바뀌었다
+  }
+  function dragEnd(e, cancel) {
+    var d = drag; if (!d || (e && e.pointerId !== undefined && e.pointerId !== d.id)) return;
+    drag = null;
+    try { d.grip.releasePointerCapture(d.id); } catch (err) { }
+    if (!d.on) return;   // 끌지 않고 눌렀다 뗐다: 뒤따르는 click 이 '어디로 옮길까요?' 를 연다
+    clearInterval(d.timer); if (d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+    document.documentElement.classList.remove('dragging');
+    Array.prototype.forEach.call(document.querySelectorAll('.drop-ok, .drop-on, .drag-src'), function (z) { z.classList.remove('drop-ok'); z.classList.remove('drop-on'); z.classList.remove('drag-src'); });
+    dragEndAt = d.touch ? 0 : Date.now();   // 마우스·펜은 끌기를 끝낸 자리에서 click 이 따라온다: 그 click 은 버린다 (터치는 움직인 뒤에는 click 이 없다)
+    if (cancel) return;
+    var zone = dropAt(d.x, d.y);
+    if (dropOk(zone, d.src)) { state.sheet = { src: d.src, to: zone.getAttribute('data-g') || '' }; render(); }
+    else if (zone && zone.getAttribute('data-drop') !== d.src.kind) toast(d.src.kind === 'i' ? '수입은 지출 묶음으로 옮길 수 없습니다' : '지출은 수입 묶음으로 옮길 수 없습니다');
+  }
+  document.addEventListener('pointerdown', function (e) {
+    var grip = e.target && e.target.closest ? e.target.closest('.grip') : null;
+    if (!grip || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (drag) dragEnd(null, true);   // 앞의 끌기가 끝났다는 신호를 못 받았다(창 밖에서 뗌 등): 정리하고 새로 시작한다
+    drag = { id: e.pointerId, touch: e.pointerType === 'touch', grip: grip, src: gripSrc(grip), x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, on: false, ghost: null, timer: null };
+    try { grip.setPointerCapture(e.pointerId); } catch (err) { }
+  });
+  document.addEventListener('pointermove', function (e) {
+    var d = drag; if (!d || e.pointerId !== d.id) return;
+    if (d.on && e.pointerType === 'mouse' && e.buttons === 0) { dragEnd(null, true); return; }   // 창 밖에서 마우스를 떼고 돌아왔다: 그만둔다
+    d.x = e.clientX; d.y = e.clientY;
+    if (!d.on) {
+      if (Math.abs(d.x - d.x0) < 6 && Math.abs(d.y - d.y0) < 6) return;   // 이만큼 움직이기 전에는 그냥 누른 것으로 본다
+      var row = Array.prototype.filter.call(document.querySelectorAll('#app [data-drag]'), function (x) { return dragIsSrc(x, d.src); })[0]; if (!row) { drag = null; return; }   // 누른 뒤 화면이 다시 그려졌어도 지금 화면의 그 줄을 찾는다
+      var r = row.getBoundingClientRect(), g = row.cloneNode(true);
+      g.className += ' drag-ghost'; g.removeAttribute('data-drag'); g.style.left = r.left + 'px'; g.style.top = r.top + 'px'; g.style.width = r.width + 'px';
+      document.body.appendChild(g); d.ghost = g; d.on = true;
+      document.documentElement.classList.add('dragging');
+      d.timer = setInterval(dragScroll, 16);
+    }
+    dragPaint();
+  });
+  document.addEventListener('pointerup', function (e) { dragEnd(e, false); });
+  document.addEventListener('pointercancel', function (e) { dragEnd(e, true); });
 
   function formVals(form, keys) { var o = {}; keys.forEach(function (k) { var el = form.querySelector('[name="' + k + '"]') || document.querySelector('[form="' + form.id + '"][name="' + k + '"]'); if (el) o[k] = el.value; }); return o; }
   function num(v) { return Number(String(v == null ? '' : v).replace(/[^\d.-]/g, '')) || 0; }
@@ -1524,6 +1794,12 @@
         });
       });
       host.querySelectorAll('input[inputmode=numeric]').forEach(function (inp) { inp.addEventListener('input', function () { var n = inp.value.replace(/[^\d]/g, ''); inp.value = n ? Number(n).toLocaleString('ko-KR') : ''; }); });
+      // 반영 화면: 항목 체크를 바꾸면 그 묶음 머리글의 체크도 맞춘다 (전부 켜짐 / 일부 / 전부 꺼짐)
+      if (fid === 'recapplyform') f.addEventListener('change', function (e) {
+        var cb = e.target; if (!cb || String(cb.name || '').indexOf('use:') !== 0) return; var gk = cb.getAttribute('data-g'), all = 0, on = 0;
+        f.querySelectorAll('input[name^="use:"]').forEach(function (x) { if (x.getAttribute('data-g') === gk) { all++; if (x.checked) on++; } });
+        f.querySelectorAll('input[data-act="grpcheck"]').forEach(function (x) { if (x.getAttribute('data-g') === gk) { x.checked = on === all; x.indeterminate = on > 0 && on < all; } });
+      });
     });
     var lq = document.getElementById('listq');
     if (lq) lq.addEventListener('input', function () { state.listQ = lq.value; updateListRes(); });   // 검색 칸은 그대로 두고 결과만 다시 그린다
@@ -1656,6 +1932,8 @@
   // PC 단축키: n 새 거래, / 목록 검색, Esc 폼 닫기 (글자 입력 중이 아닐 때만)
   document.addEventListener('keydown', function (e) {
     var tag = (e.target && e.target.tagName || '').toLowerCase(); var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey;
+    if (e.key === 'Escape' && drag && drag.on) { dragEnd(null, true); return; }   // 끄는 중: 그만둔다
+    if (e.key === 'Escape' && state.sheet) { state.sheet = null; render(); return; }   // 옮기기 확인 창 닫기
     if (e.key === 'Escape' && (state.view === 'add' || state.view === 'edit')) { go(state.returnTo || 'list'); return; }
     if (typing || !state.config) return;
     if (e.key === 'n' || e.key === 'N') { e.preventDefault(); go('add'); }
@@ -1663,10 +1941,16 @@
   });
   var busyAct = {};   // 응답을 기다리는 버튼 (같은 버튼을 다시 눌러 기록이 두 번 들어가지 않게)
   document.addEventListener('click', function (e) {
+    if (dragEndAt && Date.now() - dragEndAt < 80) { dragEndAt = 0; if (e.preventDefault) e.preventDefault(); return; }   // 끌어 옮기기를 끝내며 마우스를 뗀 바로 그 click: 그 밑의 줄·버튼이 눌리지 않게 버린다 (떼는 것과 같은 순간에 오므로 아주 짧게만 본다 — 곧바로 누르는 '옮기기'는 받아야 한다)
     var el = e.target.closest('[data-act]'); if (!el) return;
     var act = el.getAttribute('data-act');
     switch (act) {
       case 'goto': go(el.getAttribute('data-to')); break;
+      // ---- 묶음 옮기기 (공동)
+      case 'movepick': if (canMove()) { state.sheet = { src: gripSrc(el) }; render(); var fb = document.querySelector('.sheet .btn'); if (fb && fb.focus) fb.focus(); } break;   // 손잡이를 끌지 않고 눌렀다 (키보드 Enter·Space 도): 어디로 옮길지 고른다
+      case 'moveto': if (state.sheet) doMove(state.sheet.src, el.getAttribute('data-v') || ''); break;
+      case 'sheetclose': state.sheet = null; render(); break;
+      case 'grpcheck': { var gk = el.getAttribute('data-g'), gf = document.getElementById('recapplyform'); if (gf) gf.querySelectorAll('input[name^="use:"]').forEach(function (cb) { if (cb.getAttribute('data-g') === gk) cb.checked = el.checked; }); break; }   // 반영 화면: 묶음 머리글의 체크로 그 묶음 전체를 켜고 끈다
       case 'retry': loadAll(); break;
       case 'reload': e.preventDefault(); location.reload(); break;
       case 'cycle': showCycle(shiftCycle(state.cycle, Number(el.getAttribute('data-d')))); break;
